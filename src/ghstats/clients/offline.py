@@ -16,7 +16,7 @@ from ghstats.store.json_cache import (
 
 # The analyzer touches at most four cache files before moving to the next repo
 # (one commits read, three pulls reads), so a tiny cache avoids re-parsing
-# without holding the whole 80MB of parsed JSON in memory.
+# without holding the whole of the parsed JSON in memory.
 _PAYLOAD_CACHE_SIZE = 4
 
 

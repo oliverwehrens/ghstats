@@ -50,16 +50,16 @@ AI_TOOL_SEED = {
 # there is no useful default. Populate it for yours, either here or straight
 # into the table:
 #
-#   INSERT INTO jira_projects (key, canonical) VALUES ('INV','INV');
+#   INSERT INTO jira_projects (key, canonical) VALUES ('ORB','ORB');
 #
 # `ghstats-reindex --unknown-issues` ranks the key-shaped prefixes in your own
 # commit messages that no project claims yet, which is where the list comes
 # from. Expect two traps while building it.
 #
-# **Trap: this cannot be an open regex.** `[A-Z]{2,}-[0-9]+` matched 132
-# distinct prefixes across the commit messages of the organization this was
-# built against, and most were not issues at all -- `ISO-8601`, `HTTP-2`,
-# `AES-256`, `RFC-3339`, `PSR-4`, `ADR-001`, `R2025-...`, `P1-...`. Extracting
+# **Trap: this cannot be an open regex.** `[A-Z]{2,}-[0-9]+` matches a great
+# many distinct prefixes across a real corpus of commit messages, and most are
+# not issues at all -- `ISO-8601`, `HTTP-2`, `AES-256`, `RFC-3339`, `PSR-4`,
+# `ADR-001`, `R2025-...`, `P1-...`. Extracting
 # those invents a hundred phantom projects, each with a handful of "issues"
 # that never existed. The whitelist is what makes the permissive pattern safe.
 #
@@ -69,15 +69,15 @@ AI_TOOL_SEED = {
 # than rewriting history, and the two spellings become one issue in the
 # explorer -- which is what they are in Jira:
 #
-#   INSERT INTO jira_projects (key, canonical) VALUES ('WARRENTY','WARRANTY');
+#   INSERT INTO jira_projects (key, canonical) VALUES ('BILLNIG','BILLING');
 JIRA_PROJECT_SEED: Dict[str, str] = {}
 
 # Bot accounts whose login does not end in `[bot]`.
 #
 # **Trap:** the test cannot be `login LIKE '%bot%'`. In the organization this
-# was built against that pattern caught a person with 2453 commits whose login
-# merely contains the substring; they would be classified as a bot and dropped
-# from every human metric.
+# was built against that pattern caught one of its most prolific human
+# contributors, whose login merely contains the substring; they would be
+# classified as a bot and dropped from every human metric.
 #
 # `ghstats-reindex` derives most automations from evidence -- any login seen with
 # a `[bot]` suffix, plus its bare form -- so this list only needs the accounts
@@ -88,9 +88,9 @@ JIRA_PROJECT_SEED: Dict[str, str] = {}
 # - **Review-only automations, which never appear bracketed at all.** The code
 #   review apps author reviews and nothing else, so there is no suffixed
 #   spelling anywhere in the store to derive the bare one from. Together they
-#   accounted for 14% of all reviews in the organization this was built
-#   against, and every one would otherwise be counted as a person reviewing
-#   code.
+#   accounted for a sizeable share of all reviews in the organization this was
+#   built against, and every one would otherwise be counted as a person
+#   reviewing code.
 #
 # To find new ones: non-member logins with reviews but no commits.
 #
@@ -156,9 +156,9 @@ CREATE TABLE coverage (
   PRIMARY KEY (repo_id, kind)
 ) WITHOUT ROWID;
 
--- Keyed on (repo_id, oid), never oid alone: 896 commits live in two repos each
--- because some repositories in this org are forks of one another. A bare oid
--- primary key silently discards one copy.
+-- Keyed on (repo_id, oid), never oid alone: a great many commits live in two
+-- repos each wherever one repository is a fork of another. A bare oid primary
+-- key silently discards one copy.
 CREATE TABLE commits (
   repo_id        INTEGER NOT NULL REFERENCES repos(id),
   oid            TEXT    NOT NULL,
@@ -245,8 +245,9 @@ CREATE TABLE ai_tools (
 );
 
 -- One row per (commit, AI tool) pair. A commit can carry several: a session
--- that spans two models leaves two trailers, so 5236 Claude-assisted commits
--- account for 7025 Claude trailers. COUNT(DISTINCT oid) when counting commits.
+-- that spans two models leaves two trailers, so Claude-assisted commits carry
+-- appreciably more trailers than there are commits. COUNT(DISTINCT oid) when
+-- counting commits.
 CREATE VIEW v_commit_ai AS
 SELECT c.repo_id, c.oid, c.author_login, c.author_email,
        c.committed_date, c.additions, c.deletions,
@@ -270,7 +271,7 @@ CREATE INDEX ix_trailers_email      ON commit_trailers (email);
 # not.
 #
 # All additive: no existing table is altered and no data is rewritten, so a
-# 96MB store already on disk upgrades in place rather than needing a re-sync.
+# store already on disk upgrades in place rather than needing a re-sync.
 V4_TABLES = """
 -- GitHub teams, sweep-maintained like `members`.
 --
@@ -305,9 +306,9 @@ CREATE TABLE team_members (
 -- **Trap: keyed on repo *name*, with no foreign key into `repos`.** The
 -- obvious design resolves each grant through `repo_id()`, which inserts the
 -- repository if absent -- and team grants reach archived repositories the
--- sweep deliberately skips, so on this organization that silently added 562
--- rows to `repos` with no `coverage`. `coverage_summary` cross-joins every
--- repository against every kind, `unusable_pairs` turns a missing pair into a
+-- sweep deliberately skips, so on a real organization that silently added
+-- hundreds of rows to `repos` with no `coverage`. `coverage_summary` cross-joins
+-- every repository against every kind, `unusable_pairs` turns a missing pair into a
 -- hard error, and every window-taking command therefore refuses for every
 -- member. Storing the name records what GitHub said without asserting the
 -- repository is part of the tracked set.
@@ -327,7 +328,7 @@ CREATE TABLE team_repos (
 -- return the bare handle (`renovate`). A filter written as
 -- `login NOT LIKE '%[bot]'` therefore drops bot commits and keeps every bot
 -- pull request -- and in the organization this was built against Renovate
--- opened 15,016 PRs, more than any human, so the miss is not a rounding error.
+-- opened more PRs than any human, so the miss is not a rounding error.
 --
 -- Rebuilt by `ghstats-reindex` from evidence rather than hardcoded, so a new
 -- automation is picked up by the next reindex. The bare form is only adopted

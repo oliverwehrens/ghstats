@@ -109,12 +109,12 @@ class StoreFixture(unittest.TestCase):
         # ada: two commits in alpha, one on 2026-08-17 late enough that its
         # local date differs from its UTC date.
         self.commit('c1', self.alpha, 'ada', '2026-08-17T09:00:00Z',
-                    'fix(INV-42): the thing', 10, 2)
+                    'fix(ORB-42): the thing', 10, 2)
         self.commit('c2', self.alpha, 'ada', '2026-08-17T22:30:00Z',
                     'chore: late night', 1, 1)
         # grace: one commit in beta, one bot commit that must not be counted.
         self.commit('c3', self.beta, 'grace', '2026-08-16T12:00:00Z',
-                    'WARRANTY-99 other thing', 5, 0)
+                    'BILLING-99 other thing', 5, 0)
         self.commit('c4', self.beta, 'renovate[bot]', '2026-08-16T13:00:00Z',
                     'bump the dep', 3, 3)
 
@@ -122,7 +122,7 @@ class StoreFixture(unittest.TestCase):
         self.conn.execute(
             'INSERT INTO pulls (repo_id, number, author_login, title, state, '
             'created_at, merged_at) VALUES (?,?,?,?,?,?,?)',
-            (self.alpha, 1, 'ada', 'INV-42 land the thing', 'MERGED',
+            (self.alpha, 1, 'ada', 'ORB-42 land the thing', 'MERGED',
              '2026-08-16T08:00:00Z', '2026-08-17T08:00:00Z'))
         # A bot PR under the bare spelling, which a `[bot]` suffix test misses.
         self.conn.execute(
@@ -148,8 +148,8 @@ class StoreFixture(unittest.TestCase):
         # fixture declares the two projects these tests reference.
         self.conn.executemany(
             'INSERT INTO jira_projects (key, canonical) VALUES (?,?)',
-            (('INV', 'INV'), ('WARRANTY', 'WARRANTY'),
-             ('WARRENTY', 'WARRANTY')))     # an alias, for the aliases test
+            (('ORB', 'ORB'), ('BILLING', 'BILLING'),
+             ('BILLNIG', 'BILLING')))     # an alias, for the aliases test
         seed_ai_tools(self.conn)          # v_commit_ai joins it; empty means no AI
         rebuild_issue_refs(self.conn)
         rebuild_bot_logins(self.conn)
@@ -220,7 +220,7 @@ class EventStreamTest(StoreFixture):
         self.assertEqual(self.actors(team='platform'), {'ada'})
 
     def test_filters_by_issue_across_kinds(self):
-        """INV-42 is named by a commit and a pull request, so both come back.
+        """ORB-42 is named by a commit and a pull request, so both come back.
 
         So does the **review** of that pull request, which names nothing itself.
         That is deliberate: reviewing the PR that implements an issue is work on
@@ -228,24 +228,24 @@ class EventStreamTest(StoreFixture):
         lifecycle. It does mean the event count and the reference count answer
         different questions -- see `_issue_breakdown`.
         """
-        stream = self.events(issue='INV-42')
+        stream = self.events(issue='ORB-42')
         self.assertEqual({(e['kind'], e['ref']) for e in stream['events']},
                          {('commit', 'c1'), ('pull', '1'), ('merge', '1'),
                           ('review', '1')})
 
     def test_a_review_is_reached_through_its_pull_request(self):
         """grace never wrote the key; she reviewed the PR that carries it."""
-        stream = self.events(issue='INV-42', kinds=('review',))
+        stream = self.events(issue='ORB-42', kinds=('review',))
         self.assertEqual({e['actor'] for e in stream['events']}, {'grace'})
 
     def test_filters_by_project(self):
         self.assertEqual(
-            {e['ref'] for e in self.events(project='WARRANTY')['events']}, {'c3'})
+            {e['ref'] for e in self.events(project='BILLING')['events']}, {'c3'})
 
     def test_attaches_issue_keys_to_events(self):
         row = next(e for e in self.events(kinds=('commit',))['events']
                    if e['ref'] == 'c1')
-        self.assertEqual(row['issues'], ['INV-42'])
+        self.assertEqual(row['issues'], ['ORB-42'])
 
     def test_attaches_ai_tools_to_events(self):
         row = next(e for e in self.events(kinds=('commit',))['events']
@@ -451,16 +451,16 @@ class AggregateTest(StoreFixture):
         self.assertIn('(no team)', teams)
 
     def test_issue_detail_spans_repositories_and_people(self):
-        bundle = q.issue_detail(self.conn, ORG, 'inv-42',
+        bundle = q.issue_detail(self.conn, ORG, 'orb-42',
                                q.Filters(tz='Europe/Berlin'))
-        self.assertEqual(bundle['issue']['key'], 'INV-42')
-        self.assertEqual(bundle['issue']['project'], 'INV')
+        self.assertEqual(bundle['issue']['key'], 'ORB-42')
+        self.assertEqual(bundle['issue']['project'], 'ORB')
         self.assertGreater(bundle['events']['total'], 0)
 
     def test_project_detail_lists_its_misspellings(self):
-        bundle = q.project_detail(self.conn, ORG, 'WARRANTY',
+        bundle = q.project_detail(self.conn, ORG, 'BILLING',
                                   q.Filters(tz='Europe/Berlin'))
-        self.assertIn('WARRENTY', bundle['project']['aliases'])
+        self.assertIn('BILLNIG', bundle['project']['aliases'])
 
     def test_repo_detail_flags_an_unknown_repository(self):
         bundle = q.repo_detail(self.conn, ORG, 'nope',
@@ -479,7 +479,7 @@ class AggregateTest(StoreFixture):
         self.assertEqual(
             [t['slug'] for t in q.search(self.conn, ORG, 'platf')['teams']],
             ['platform'])
-        self.assertIn('INV-42', q.search(self.conn, ORG, 'inv-42')['issues'])
+        self.assertIn('ORB-42', q.search(self.conn, ORG, 'orb-42')['issues'])
 
     def test_search_on_empty_input_returns_nothing(self):
         self.assertEqual(q.search(self.conn, ORG, '  ')['users'], [])
@@ -540,7 +540,7 @@ class RoutingTest(StoreFixture):
         self.assertEqual(self.call('/api/users/ada')['user']['login'], 'ada')
         self.assertEqual(self.call('/api/repos/alpha')['repo']['name'], 'alpha')
         self.assertEqual(self.call('/api/teams/platform')['team']['slug'], 'platform')
-        self.assertEqual(self.call('/api/issues/INV-42')['issue']['key'], 'INV-42')
+        self.assertEqual(self.call('/api/issues/ORB-42')['issue']['key'], 'ORB-42')
         self.assertEqual(self.call('/api/days/2026-08-17')['day']['date'],
                          '2026-08-17')
 

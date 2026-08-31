@@ -5,9 +5,9 @@ and the per-user JSON contract are untouched. The record classes are imported
 rather than reimplemented: identical parsing by construction is worth more here
 than independence, because Phase 3's whole job is proving the two paths agree.
 
-Where the JSON client reads one repo file per call -- 1198 files per user, 218
-times per report -- this one warms **three queries per user** and serves the
-per-repo calls from memory.
+Where the JSON client reads one repo file per call -- every repo file, once per
+user, once per member of the org -- this one warms **three queries per user** and
+serves the per-repo calls from memory.
 
 Windows are filtered in Python with the same `_in_window`, not in SQL. The
 comparison could be pushed into the query, and eventually should be, but during

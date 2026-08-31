@@ -148,9 +148,9 @@ ghstats-reindex --unknown-issues        # ranks key-shaped prefixes no project c
 ```
 
 ```sql
-INSERT INTO jira_projects (key, canonical) VALUES ('INV','INV');
+INSERT INTO jira_projects (key, canonical) VALUES ('ORB','ORB');
 -- A misspelling folds onto what it meant, so both spellings are one issue:
-INSERT INTO jira_projects (key, canonical) VALUES ('WARRENTY','WARRANTY');
+INSERT INTO jira_projects (key, canonical) VALUES ('BILLNIG','BILLING');
 ```
 
 Then `ghstats-reindex`. Because this is derived offline, adopting a project reclassifies
@@ -208,9 +208,9 @@ picked up without anyone editing a list by hand.
 ### Teams
 
 `ghstats-sync` also sweeps the organization's teams, their rosters and their repository
-grants — 66 teams cost about 15 GraphQL points. That is what lets the explorer answer "what
-did this group change on Tuesday" without anyone maintaining a roster file by hand. Churn is
-reported like member churn.
+grants — a whole org's teams cost a handful of GraphQL points. That is what lets the explorer
+answer "what did this group change on Tuesday" without anyone maintaining a roster file by
+hand. Churn is reported like member churn.
 
 GitHub reports **current** membership with no history, so a window predating someone's move
 credits their old work to their new team. Right for last week, wrong across a reorg — the
@@ -302,15 +302,15 @@ over history already collected. Jira keys work the same way: adopt a project wit
 
 Two of the derived tables exist because the naive version of each is quietly wrong:
 
-- **`issue_refs`** cannot come from an open `[A-Z]{2,}-[0-9]+`. That pattern matched 132
-  distinct prefixes across one org's commit messages and most were not issues — `ISO-8601`,
-  `AES-256`, `PSR-4`, `ADR-001`. `jira_projects` decides instead, and it maps alias →
+- **`issue_refs`** cannot come from an open `[A-Z]{2,}-[0-9]+`. That pattern matches a great
+  many distinct prefixes across a real corpus of commit messages and most are not issues —
+  `ISO-8601`, `AES-256`, `PSR-4`, `ADR-001`. `jira_projects` decides instead, and it maps alias →
   canonical because one project there arrived under five spellings: a transposition, a
   dropped leading letter, a zero typed for an O.
-- **`bot_logins`** cannot be `LIKE '%bot%'` — in that same org it would have caught a person
-  with 2453 commits whose login merely contains the substring — and cannot be
+- **`bot_logins`** cannot be `LIKE '%bot%'` — in that same org it would have caught one of its
+  most prolific committers, whose login merely contains the substring — and cannot be
   `NOT LIKE '%[bot]'` either, because GraphQL spells the same account `renovate[bot]` on a
-  commit and `renovate` on a pull request. Renovate alone opened 15,016 PRs there.
+  commit and `renovate` on a pull request. Renovate alone opened more PRs there than any human.
 
 Details and the queries for extending both are in [docs/explorer.md](docs/explorer.md).
 
@@ -361,8 +361,8 @@ the reader refuse instead.
 | pull | `(repo_id, number)` | upsert — a PR merged months after it opened must refresh |
 | review | `id` | upsert, unioned rather than replaced |
 
-Commits key on `(repo_id, oid)` rather than `oid` alone because 896 commits lived in two
-repositories each in the org this was built against, where one repo was a fork of another.
+Commits key on `(repo_id, oid)` rather than `oid` alone because a great many commits lived in
+two repositories each in the org this was built against, where one repo was a fork of another.
 
 Each repository is one transaction covering both its rows and its `coverage` row: either
 the new data and the advanced watermark both land, or neither does. Fetching runs at
@@ -407,7 +407,7 @@ limits are enforced:
   because it fires on request concurrency and server CPU. The backoff is shared across all
   threads; independent per-thread retries are what provoke it.
 
-A nightly sweep of ~1200 repositories costs roughly 170–650 points of the 5000/hour budget
+A nightly sweep of a large organization costs roughly 170–650 points of the 5000/hour budget
 and takes a few minutes.
 
 ## Troubleshooting

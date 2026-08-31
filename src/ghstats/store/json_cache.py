@@ -307,7 +307,7 @@ class CacheStore:
     def coverage_summary(self, org: str) -> Dict[str, Any]:
         """Survey what range the whole cache actually holds.
 
-        Reads every repo file once (~0.6s for 1198 repos) so a report can check
+        Reads every repo file once (well under a second) so a report can check
         its window up front rather than discovering a shortfall per repo, or
         worse, silently under-reporting.
 

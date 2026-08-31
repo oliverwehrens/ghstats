@@ -32,8 +32,8 @@ DEFAULT_CACHE = '.cache'
 def read_curated(db_path: str) -> List[Tuple]:
     """Rescue hand-maintained rows from a database about to be replaced.
 
-    `identities` is auto-seeded but hand-corrected -- that is how the 5971
-    commits with no linked GitHub account get attributed to a person. A
+    `identities` is auto-seeded but hand-corrected -- that is how the commits
+    with no linked GitHub account get attributed to a person. A
     re-import that silently discarded those corrections would make the
     curation worthless, and the loss would be invisible until someone noticed
     a contributor's numbers had quietly dropped again.

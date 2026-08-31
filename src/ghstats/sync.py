@@ -40,7 +40,7 @@ from ghstats.github.graphql import GitHubGraphQL, GraphQLError, GraphQLTransport
 COMMIT_OVERLAP = timedelta(days=14)
 PR_OVERLAP = timedelta(days=1)
 
-# Measured ceilings against a 1198-repo org. Two independent limits bite:
+# Measured ceilings against a large org. Two independent limits bite:
 #
 #   Node count -- 50 repos x 20 PRs x 20 reviews trips RESOURCE_LIMITS_EXCEEDED
 #   at ~21k nodes. Repo batch x page size x review page must stay well under it.

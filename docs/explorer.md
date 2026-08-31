@@ -19,10 +19,10 @@ ghstats-explore --timezone Europe/Berlin --open
 ## Why it is served, not generated
 
 The obvious extension of the old pipeline would have been more static HTML. That
-does not work here, and the reason is arithmetic: 218 members × 1198
-repositories × 595 days is not a set of files anyone can pre-render. Nor can the
-answer be embedded in one page — the store is 96MB, and the interesting content
-is the commit messages, which is most of it.
+does not work here, and the reason is arithmetic: members × repositories × days
+is not a set of files anyone can pre-render. Nor can the answer be embedded in
+one page — the store runs to tens of megabytes, and the interesting content is
+the commit messages, which is most of it.
 
 So the slices live as functions over the store (`explorer/queries.py`) and a
 loopback HTTP server exposes them (`explorer/server.py`). The store stays the
@@ -110,8 +110,8 @@ January activity on the wrong day either side of 23:00 local.
 
 ## Teams
 
-`ghstats-sync` sweeps them, like it does members — 66 teams, 15 GraphQL points.
-Skip with `--skip-teams`.
+`ghstats-sync` sweeps them, like it does members, for a handful of GraphQL
+points. Skip with `--skip-teams`.
 
 Teams are fetched 20 at a time, not 100: GraphQL bills nested connections
 multiplicatively, so `teams(100) { members(100) }` is priced as 10,000 nodes.
@@ -124,19 +124,19 @@ history, so a window that predates someone's move credits their old work to
 their new team. That is right for last week and wrong across a reorg, and the
 team view says so on screen rather than leaving it to be discovered.
 
-**75 of 218 members are on no team.** `team_list` reports that count, because
+**A third of members are on no team.** `team_list` reports that count, because
 team views otherwise look like they cover the organization when they cover two
 thirds of it.
 
 **`team_repos` is keyed on repository *name*, with no foreign key into `repos`.**
 The obvious design resolves each grant through `repo_id()`, which inserts the
 repository when absent — and team grants reach archived repositories the sweep
-deliberately skips. On this organization that added 562 coverage-less rows to
-`repos`; `coverage_summary` cross-joins every repository against every kind,
-`unusable_pairs` turns a missing pair into a hard error, and every
-window-taking command refused for all 218 members. Storing the name records what
-GitHub said without asserting the repository is tracked. 1,283 of 3,137 grants
-point at repositories outside the sweep, and the UI marks them.
+deliberately skips. On a real organization that added hundreds of coverage-less
+rows to `repos`; `coverage_summary` cross-joins every repository against every
+kind, `unusable_pairs` turns a missing pair into a hard error, and every
+window-taking command refused for every member. Storing the name records what
+GitHub said without asserting the repository is tracked. A large minority of
+grants point at repositories outside the sweep, and the UI marks them.
 
 ## Jira
 
@@ -145,8 +145,8 @@ into `issue_refs` — derived, offline, never fetched. Adding a project and
 reindexing reclassifies twenty months of history without an API call, the same
 payoff the co-author trailers get.
 
-**The extractor cannot be an open regex.** `[A-Z]{2,}-[0-9]+` matches 132
-distinct prefixes across these commit messages and most are not issues:
+**The extractor cannot be an open regex.** `[A-Z]{2,}-[0-9]+` matches a great
+many distinct prefixes across these commit messages and most are not issues:
 
 ```
 ISO-8601   HTTP-2   AES-256   RFC-3339   PSR-4   SHA-1   UTF-8
@@ -161,12 +161,12 @@ permissive and `jira_projects` decides — a curated table, seeded from
 project key was typed four different wrong ways — a transposition, a dropped
 leading letter, two other slips — another was typed with a zero for its O, and a
 third picked up an unrelated product name. The table maps alias → canonical, so
-`WARRENTY-4131` and `WARRANTY-4131` are one issue — which is what they are in
-Jira. Numbers are normalised through `int()`, so `INV-0042` is `INV-42`.
+`BILLNIG-4131` and `BILLING-4131` are one issue — which is what they are in
+Jira. Numbers are normalised through `int()`, so `ORB-0042` is `ORB-42`.
 
-Matching is **case-insensitive**, which the whitelist makes safe: 533 keys here
-are lowercase, usually a branch name carried into a merge commit, and a
-case-sensitive pattern loses every one.
+Matching is **case-insensitive**, which the whitelist makes safe: a great many
+keys here are lowercase, usually a branch name carried into a merge commit, and
+a case-sensitive pattern loses every one.
 
 To adopt a project that shows up later:
 
@@ -196,13 +196,13 @@ Both are right. The first is "how often was this key written", the second is
 are not:
 
 - `login LIKE '%bot%'` classifies a person whose login merely contains the
-  substring as an automation — one such account had 2453 commits in the source
-  organization.
+  substring as an automation — one such account was among the most prolific
+  committers in the source organization.
 - `login NOT LIKE '%[bot]'` catches bot commits and **no** bot pull requests,
   because GraphQL resolves commit authorship to the account record (which carries
   the suffix) while `PullRequest.author` returns the bare handle. The same
   account is `renovate[bot]` on a commit and `renovate` on a PR — and Renovate
-  opened 15,016 PRs here, more than any human.
+  opened more PRs here than any human.
 
 So the table records both spellings, derived from evidence: any login seen
 suffixed anywhere, plus its bare form when that bare form is not an active
@@ -210,10 +210,10 @@ member. The membership guard is what keeps a hypothetical human `renovate` out.
 
 **Review-only automations need the curated list.** The code review apps author
 reviews and nothing else, so no suffixed spelling exists anywhere in the store to
-derive the bare one from. `cursor` (Bugbot, 2256 reviews),
-`copilot-pull-request-reviewer` (1988), `renovate-approve` (390) and `claude`
-(11) together account for 4,645 of 32,877 reviews — 14% — and every one would
-otherwise read as a person reviewing code. They live in `BOT_LOGINS`.
+derive the bare one from. `cursor` (Bugbot), `copilot-pull-request-reviewer`,
+`renovate-approve` and `claude` together account for a sizeable share of all
+reviews — and every one would otherwise read as a person reviewing code. They
+live in `BOT_LOGINS`.
 
 To find more:
 
@@ -232,8 +232,8 @@ organization, whose reviews are real.
 ## Schema migrations
 
 `connect()` now carries a ladder. Before it, any `user_version` mismatch was a
-hard error, which for a 96MB store would have meant re-syncing twenty months of
-history to add a table.
+hard error, which for a store of any size would have meant re-syncing twenty
+months of history to add a table.
 
 Every migration is additive — new tables only, no `ALTER`, no rewrite — so it is
 instant at any size and cannot damage the collected history. `V4_TABLES` is

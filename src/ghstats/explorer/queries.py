@@ -177,11 +177,11 @@ def _bot_clause(column: str, include_bots: bool) -> str:
     equivalent are not:
 
     - `LIKE '%bot%'` would classify a person whose login merely contains the
-      substring as an automation -- one such account had 2453 commits in the
-      org this was built against.
+      substring as an automation -- one such account was among the most
+      prolific committers in the org this was built against.
     - `NOT LIKE '%[bot]'` catches bot *commits* and no bot *pull requests*,
       because GraphQL spells the same account `renovate[bot]` on a commit and
-      `renovate` on a PR. Renovate alone opened 15,016 PRs in that org.
+      `renovate` on a PR. Renovate alone opened more PRs than any human there.
 
     Left as a correlated subquery rather than an expanded parameter list so the
     filter cannot drift from what the reindex decided.
@@ -997,9 +997,10 @@ def team_list(conn: sqlite3.Connection) -> Dict[str, Any]:
     Takes no `org`: like `members`, teams are not org-scoped in the schema,
     because one store holds one organization's people.
 
-    `unassigned` counts members on no team at all -- 75 of 218 on this store.
-    Leaving that implicit would make the team views look like they cover the
-    organization when they cover two thirds of it.
+    `unassigned` counts members on no team at all -- a third of them on the
+    store this was built against. Leaving that implicit would make the team
+    views look like they cover the organization when they cover two thirds
+    of it.
     """
     teams = [dict(r) for r in conn.execute("""
         SELECT t.slug, t.name, t.description, t.parent_slug,

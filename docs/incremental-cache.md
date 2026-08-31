@@ -1,9 +1,9 @@
 # Design: incremental, never-deleting GitHub cache
 
 > **Historical design record.** Written while this was built, and kept for the reasoning
-> rather than as current documentation. Measurements are from the one organization it was
-> developed against, referred to below as the source organization. See the README for how
-> the tool is configured today.
+> rather than as current documentation. It was sized against one organization, referred to
+> below as the source organization; its counts have been replaced with the magnitudes that
+> actually drove each decision. See the README for how the tool is configured today.
 
 Status: awaiting sign-off. No code written yet.
 
@@ -35,46 +35,47 @@ organization); keeping the current REST/PyGithub fetch path working alongside th
 
 ## Measurements that drove the design
 
-All taken against the source organization on 2026-08-17.
+All taken against the source organization while this was written.
 
 | Measurement | Value |
 |---|---|
-| Active (non-archived) repos | 1198 |
+| Active (non-archived) repos | Four figures |
 | REST `list-commits` includes `stats`? | **No** — returns `stats: null` |
-| GraphQL commit exposes `additions`/`deletions` inline? | **Yes**, cost 1 pt for 10 repos / 398 commits |
-| Commits in org, last 14d | 6206 |
-| PRs updated in org, last 1d / 14d | 927 / 5109 |
-| Repos with PR activity but no push in window | 18 of 304 (**6%**) |
-| Commits since 2026-01-01, top 10 repos alone | 4762 |
+| GraphQL commit exposes `additions`/`deletions` inline? | **Yes**, and a batch of 10 repos costs 1 pt |
+| Commits in org, last 14d | Thousands |
+| PRs updated in org, last 1d / 14d | Hundreds / thousands |
+| Repos with PR activity but no push in window | A small but material share |
+| Commits year to date, top 10 repos alone | Thousands |
 
 Three consequences:
 
 1. **The dominant cost today is commit stats, not the repo scan.** `activity_cache.py:107`
    reads `commit.stats`, which PyGithub must fetch per-commit because the list response
-   omits it. That is ~6200 API calls per 14-day window.
+   omits it. That is one API call per commit — thousands per 14-day window.
 2. **The Events API and the Search API are both unusable here.** Events: 300-event cap,
-   30-day horizon, 30s–6h latency, public-only — against 927 PR updates/day. Search: hard
-   1000-result cap that **truncates silently** — against 5109 PR updates and 6206 commits
-   per 14 days.
+   30-day horizon, 30s–6h latency, public-only — against hundreds of PR updates a day.
+   Search: hard 1000-result cap that **truncates silently** — against thousands of PR
+   updates and thousands of commits per 14 days.
 3. **A `pushed_at` repo gate is not worth it.** Reviews don't bump `pushed_at`, so it drops
-   6% of PR/review activity, and with GraphQL it saves ~80 points out of 5000/hour.
+   a small but real share of PR/review activity, and with GraphQL it saves a negligible
+   slice of the 5000/hour budget.
 
 ---
 
 ## Architecture
 
-Sync and reporting are separated. Today `main.py` does both, so `report.sh`'s 203 per-user
-invocations each try to refresh shared org data — the TTL is the only thing suppressing
-730k redundant API calls.
+Sync and reporting are separated. Today `main.py` does both, so `report.sh`'s one
+invocation per member each try to refresh shared org data — the TTL is the only thing
+suppressing hundreds of thousands of redundant API calls.
 
 ```
 sync.py            (GraphQL, network)   → .cache/
-main.py --offline  (no network)         → <user>_<org>.json          × 203
+main.py --offline  (no network)         → <user>_<org>.json      × one per member
 generate_html_report.py                 → report.html
 ```
 
-`report.sh` becomes: sync once → 203 offline runs → HTML. Total API cost is ~170 points
-regardless of user count.
+`report.sh` becomes: sync once → one offline run per member → HTML. Total API cost is
+~170 points regardless of user count.
 
 ### Transport
 
@@ -109,10 +110,10 @@ That wait does not count against the query's retry budget, since it is a pause r
 a failed attempt.
 
 Why the old REST path took ~24 hours: REST bills 5000 **requests**/hour, and
-`commit.stats` cost one request *per commit* (`list-commits` returns `stats: null`). At
-70k–115k commits that is 14–23 hours of pure rate-limit waiting before counting PRs at all.
-GraphQL bills ~5000 **points**/hour and returns stats inline, so the same work costs ~2,300
-points.
+`commit.stats` cost one request *per commit* (`list-commits` returns `stats: null`). At the
+org's commit volume that is most of a day of pure rate-limit waiting before counting PRs at
+all. GraphQL bills ~5000 **points**/hour and returns stats inline, so the same work costs
+~2,300 points.
 
 ---
 
@@ -176,7 +177,7 @@ second rebuild.
 
 ## Sync algorithm
 
-Nightly, sweeping **all 1198 active repos** — no `pushed_at` gate.
+Nightly, sweeping **every active repo** — no `pushed_at` gate.
 
 ### Two overlap windows
 
@@ -189,13 +190,13 @@ These are **not** the same knob and must not be merged.
 
 - **`COMMIT_OVERLAP` is a correctness parameter.** GitHub's `since` filters on the commit's
   own date, not when it landed on `main`. With squash/rebase merges the committer date is
-  rewritten to merge time, so incremental works. With **merge commits — 15.7% of your
-  history** — the branch's commits keep their original dates, so a June branch merged in
-  September is invisible to `since=<September>`. Forever. 14 days of re-reading is what
-  closes that hole.
+  rewritten to merge time, so incremental works. With **merge commits — a substantial
+  share of any history** — the branch's commits keep their original dates, so a June branch
+  merged in September is invisible to `since=<September>`. Forever. 14 days of re-reading is
+  what closes that hole.
 - **`PR_OVERLAP` is just slack.** `updated_at` only moves forward, so `since last_sync`
   already catches every PR change. 1 day absorbs clock skew and partially-failed runs.
-  Using 14 days here would re-pull ~5100 PRs nightly for no correctness gain.
+  Using 14 days here would re-pull thousands of PRs nightly for no correctness gain.
 
 ### Commits
 
@@ -230,11 +231,12 @@ with `reviews(last: 20)` nested. Paginate until `updated_at < covered_to - PR_OV
 then stop.
 
 **`reviews(last:)`, not `first:`.** The `reviews` connection has no `orderBy` and returns
-oldest-first, so `first: N` yields the *oldest* N — on `review-service#1619` (12 reviews),
-`first:5` returns May 27–29 while `last:5` returns May 29–Jun 16. Using `first:` would
-systematically miss the newest reviews on busy PRs, which is precisely what an incremental
-sync exists to catch. Any PR reporting `totalCount > 20` gets its reviews fetched separately
-with full forward pagination, so the rebuild doesn't lose the oldest ones either.
+oldest-first, so `first: N` yields the *oldest* N — on a PR carrying a dozen reviews over
+three weeks, `first:5` returns the opening days and `last:5` the closing ones. Using
+`first:` would systematically miss the newest reviews on busy PRs, which is precisely what
+an incremental sync exists to catch. Any PR reporting `totalCount > 20` gets its reviews
+fetched separately with full forward pagination, so the rebuild doesn't lose the oldest ones
+either.
 
 Merge: **upsert pulls by `number`, reviews by `id`.** "Never delete" means never lose an
 entity, not never overwrite a field — a PR created in January and merged in August must
@@ -296,31 +298,21 @@ and both were wrong — the first too low (sized on commits, ignoring PR volume)
 too high (extrapolated from the 30 busiest repos, which are wildly atypical). This one is
 arithmetic over actual counts.
 
-Volume from 2025-01-01, measured:
+Volume from 2025-01-01 was counted rather than sampled: PRs created, commits on all
+branches, active repos, and lifetime PRs across the org, with a long tail of repos holding
+no PRs at all and the busiest thirty holding a large minority of them.
 
-| | count |
-|---|---|
-| PRs created | 40,396 |
-| Commits (all branches; default-branch-only is lower) | 114,721 |
-| Active repos | 1,198 (56 with zero PRs) |
-| Lifetime PRs, whole org | 116,492 — top 30 repos hold 41% |
+Dividing those counts by the page sizes (`--pull-page 50` / `COMMIT_PAGE 100`) and adding
+the per-batch repo queries and the repo enumeration puts the rebuild at roughly **2,300
+queries**.
 
-Queries needed, at `--pull-page 50` / `COMMIT_PAGE 100`:
+Points track queries almost 1:1 in practice. So the rebuild is roughly **2,300–2,800
+points — inside a single 5000/hour window** — and at the measured ~0.5s/query with
+`--concurrency 3`, **about 30–60 minutes**.
 
-```
-pulls      ~45,000 / 50   =  900   + 1198/5 batch queries  = 240   → ~1,150
-commits    ~70,000 / 100  =  700   + 1198/3 batch queries  = 400   → ~1,100
-repo enumeration                                                   →     12
-                                                            total  → ~2,300
-```
-
-Points track queries almost 1:1 in practice (939 queries cost 941 points). So the rebuild
-is roughly **2,300–2,800 points — inside a single 5000/hour window** — and at the measured
-~0.5s/query with `--concurrency 3`, **about 30–60 minutes**.
-
-Cost per repo is extremely skewed: the 30 busiest ran ~31 points each, while samples at
-offsets 400 and 900 in the push-ordered list ran ~1 point each (15 repos = 17 and 14 points
-respectively). Any estimate drawn from the head of that distribution will be far too high.
+Cost per repo is extremely skewed: the busiest thirty ran tens of points each, while
+samples drawn from further down the push-ordered list ran about a point each. Any estimate
+drawn from the head of that distribution will be far too high.
 
 Two limits bite during a rebuild that never appear in nightly runs, both handled:
 
@@ -351,7 +343,7 @@ Two limits bite during a rebuild that never appear in nightly runs, both handled
 offline reader discovers repos by globbing `.cache/repos/<org>/*/`. Flagging this as a
 consequence rather than a decision you made — say if you'd rather keep it.
 
-**`report.sh`**: `sync.py` once, then 203 × `main.py`, then the HTML.
+**`report.sh`**: `sync.py` once, then one `main.py` per member, then the HTML.
 
 ---
 
@@ -372,7 +364,7 @@ on this line, not on the caching.
 - **Archived repos keep their cache.** The sweep queries `isArchived: false`, but a repo that
   *becomes* archived retains its history. Otherwise archiving would retroactively erase last
   spring's work from everyone's stats.
-- **Bots are stored, filtered at report time.** Much of the 927 PR-updates/day is Renovate.
+- **Bots are stored, filtered at report time.** Much of the daily PR-update volume is Renovate.
   Storing it is cheap; discarding at fetch time is unrecoverable.
 - **Slow drift is permanent.** Upsert handles change but not disappearance: force-pushed
   commits stay counted, renamed repos leave ghost directories. The TTL used to clean this up
@@ -388,8 +380,9 @@ on this line, not on the caching.
 2. ✅ Cache layer: schema v1, atomic write, merge rules, coverage-window read guard.
 3. ✅ `sync.py`: repo enumeration → commits → pulls+reviews → `sync_state.json` → summary + exit code.
 4. ✅ Dry-run against ~20 repos; verify merge-commit catch-up by syncing a stale window twice.
-5. ✅ Full rebuild from 2025-01-01 — 1198 repos, 80MB, **2408 points, 32.7 min**, 1 repo failed
-   (the one whose commit query always 502s; needs a targeted re-sync).
+5. ✅ Full rebuild from 2025-01-01 — every active repo, **within one hourly point budget and
+   inside an hour**, 1 repo failed (the one whose commit query always 502s; needs a targeted
+   re-sync).
 6. ✅ `main.py` offline conversion; REST path deleted.
 7. ✅ `report.sh` rewiring; staleness banner in the HTML.
 8. Schedule it.
@@ -401,8 +394,8 @@ Steps 1–4 are safe alongside the existing cache; step 5 is the irreversible on
 New `offline_client.py` exposes the subset of the old `GitHubClient` interface that
 `ActivityAnalyzer` uses, reading only the cache. The analyzer keeps its aggregation logic
 untouched (four edits: dropped the two PyGithub imports, `commit.commit.author.date` →
-`commit.date`, and a `quiet` flag — one progress line per repo across 1198 repos and 203
-users is 243k lines of output).
+`commit.date`, and a `quiet` flag — one progress line per repo per user runs to hundreds of
+thousands of lines of output).
 
 Deleted, now fully unreferenced: `github_client.py`, `activity_cache.py`, `repo_cache.py`.
 PyGithub dropped from `requirements.txt`. `check_inactive_users.py` was converted too — it
@@ -410,12 +403,12 @@ imported `GitHubClient` and had the same structural bug, hitting the API once pe
 across every repo.
 
 `main.py` runs a **coverage preflight** via `CacheStore.coverage_summary()` (~0.6s, one pass
-over all 2395 files). The lower bound is a hard error with exit 2; the upper bound is clamped
+over every cache file). The lower bound is a hard error with exit 2; the upper bound is clamped
 to `covered_to` and reported. Every report carries a `cache` block recording
 `covered_from`/`covered_to`/`effective_until`/`sync_state`, which is what step 7's staleness
 banner will read.
 
-Timing: **1.15s per user**, so ~4 min for all 203 with zero API calls.
+Timing: **~1.2s per user**, so a few minutes for the whole org with zero API calls.
 
 ### Validation: the new numbers are right, the old ones undercounted
 
@@ -423,28 +416,27 @@ Re-running six users over the old window and deep-diffing against the previously
 JSON showed exact agreement for some users and differences for high-activity ones. Both
 causes were traced:
 
-**Repos archived since the old run (new reports less).** For one member, 7 repos
-vanished — all confirmed `archived=true`, archived after 2026-08-04. The rebuild
+**Repos archived since the old run (new reports less).** For one member, a handful of repos
+vanished — all confirmed `archived=true`, archived after the old run. The rebuild
 queries `isArchived: false`, so repos archived *before* the rebuild were never fetched. The
-"archived repos keep their cache" protection only applies going forward. Org-wide there are
-1010 archived repos, **133 with pushes since 2025-01-01** and 47 since 2026-01-01 — see the
-open question below.
+"archived repos keep their cache" protection only applies going forward. Org-wide the
+archived set is large, and **a materially sized slice of it has pushes inside the reporting
+window** — see the open question below.
 
-**Stale narrow-window cache in the old run (new reports more).** On
-`legal-identity-provider` the old report said 67 commits and the new says 80. Ruled out:
-committer-vs-author date filtering (all 80 have both dates inside the window) and
-late-landing merge commits (none landed after the old fetch date). Counting live from GitHub
-today gives **80** — matching the new path exactly. The old figure was wrong, almost
-certainly the silent-undercount this redesign exists to prevent: a `commits.json` written
-for a narrower range, reused inside the 20-day TTL with nothing on disk recording what it
-covered.
+**Stale narrow-window cache in the old run (new reports more).** On one repository the old
+report said 67 commits and the new says 80. Ruled out: committer-vs-author date filtering
+(all 80 have both dates inside the window) and late-landing merge commits (none landed after
+the old fetch date). Counting live from GitHub today gives **80** — matching the new path
+exactly. The old figure was wrong, almost certainly the silent-undercount this redesign
+exists to prevent: a `commits.json` written for a narrower range, reused inside the 20-day
+TTL with nothing on disk recording what it covered.
 
 ### Step 7 as built
 
-`report.sh` is now sync-once → 203 offline reports → HTML, with `--skip-sync` for
+`report.sh` is now sync-once → one offline report per member → HTML, with `--skip-sync` for
 rebuilding the HTML without touching the network and `--help` that works. A sync exit code
-of non-zero warns rather than aborting: one repo failing out of 1198 kept its old watermark
-and will be covered next run, which is not a reason to abandon the report.
+of non-zero warns rather than aborting: one repo failing out of the whole sweep kept its old
+watermark and will be covered next run, which is not a reason to abandon the report.
 
 `build_cache_banner()` in `generate_html_report.py` renders freshness at the top of the
 page, reading the `cache` block `main.py` writes into every user's JSON:
@@ -463,8 +455,8 @@ with new. The banner now says so explicitly.
 
 ### Member list
 
-The user list was hand-maintained and had drifted badly: `users.txt` held 203 names while
-the org had **218 members — 30 joiners missing from every report, 15 leavers still carried**.
+The user list was hand-maintained and had drifted badly: `users.txt` held a stale roster
+while the org had **dozens of joiners missing from every report and leavers still carried**.
 Nothing in the repo populated it.
 
 `sync.py` now fetches `organization.membersWithRole` (3 queries, 3 points) and writes
@@ -482,7 +474,7 @@ the staleness banner claim the repository data is fresh.
 
 ### Open question, still open
 
-Archived repos are excluded from the sweep, so the rebuild silently dropped 133 repos that
-hold real 2025–2026 history. That contradicts the permanence goal. A one-time
+Archived repos are excluded from the sweep, so the rebuild silently dropped every archived
+repo that holds real 2025–2026 history. That contradicts the permanence goal. A one-time
 `--include-archived` backfill would recover it, and since archived repos never change they
 would never need re-syncing. Roughly doubles the repo count for one run only.

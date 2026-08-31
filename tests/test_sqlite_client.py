@@ -1,6 +1,6 @@
 """Tests for the SQLite-backed activity client.
 
-The real proof is the 218-user comparison against the JSON pipeline, which
+The real proof is the whole-org comparison against the JSON pipeline, which
 cannot run without the live cache. These pin the semantics that comparison
 would only catch by accident: window boundaries, review deduplication, and the
 ordering the emitted JSON's key order depends on.
@@ -170,10 +170,10 @@ class SyncStateTest(ClientTestCase):
 
     def test_prefers_the_latest_complete_sweep(self):
         """A three-repo retry must not be reported as the nightly sync."""
-        self.run_row('2025-01-01T00:00:00Z', 1, 1198)
+        self.run_row('2025-01-01T00:00:00Z', 1, 400)
         self.run_row('2025-01-02T00:00:00Z', 0, 3)
         state = load_sync_state(self.conn, 'o')
-        self.assertEqual(state['last_run_repos'], 1198)
+        self.assertEqual(state['last_run_repos'], 400)
 
     def test_falls_back_when_no_complete_run_exists(self):
         self.run_row('2025-01-02T00:00:00Z', 0, 3)

@@ -30,7 +30,8 @@ class ActivityAnalyzer:
         Args:
             client: OfflineClient instance (reads the local cache; no network)
             quiet: Suppress per-repository progress. Essential for batch runs:
-                one line per repo across 1198 repos and 203 users is 243k lines.
+                one line per repo per user runs to hundreds of thousands of
+                lines on a large organization.
         """
         self.client = client
         self.quiet = quiet

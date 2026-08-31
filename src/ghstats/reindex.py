@@ -27,7 +27,7 @@ DEFAULT_DB = '.cache/ghstats.db'
 # (`feat:`, `fix:`) match the general trailer shape but are subject lines, not
 # trailers, and carry no identity.
 #
-# Leading whitespace is tolerated. Four real commits indent the whole message
+# Leading whitespace is tolerated. Some real commits indent the whole message
 # body, and GitHub's own attribution would miss those -- but the question here
 # is whether an assistant was involved, not how GitHub renders the byline, and
 # indentation is a formatting artifact either way. Anchoring at column zero
@@ -41,16 +41,16 @@ CO_AUTHOR = re.compile(
 # A candidate issue key: a letter-leading prefix, a hyphen, a number.
 #
 # Deliberately permissive, because the prefix is not what decides whether this
-# is an issue -- `jira_projects` is. Over one real org's commit messages the
-# pattern matched 132 distinct prefixes, and most were not issues at all
-# (`ISO-8601`, `AES-256`, `PSR-4`, `ADR-001`). Filtering on a curated table
+# is an issue -- `jira_projects` is. Over a real corpus of commit messages the
+# pattern matches a great many distinct prefixes, and most are not issues at
+# all (`ISO-8601`, `AES-256`, `PSR-4`, `ADR-001`). Filtering on a curated table
 # instead of on the shape of the match is what keeps `HTTP-2` out and a
 # misspelled-but-real key in.
 #
-# Matching is **case-insensitive**, which the whitelist makes safe: 533 keys in
-# those messages were typed in lowercase (`inv-4549`), usually
-# inside a branch name carried into a merge commit, and a case-sensitive
-# pattern silently loses every one of them.
+# Matching is **case-insensitive**, which the whitelist makes safe: a great
+# many keys are typed in lowercase (`orb-4549`), usually inside a branch name
+# carried into a merge commit, and a case-sensitive pattern silently loses
+# every one of them.
 ISSUE_KEY = re.compile(r'\b([A-Za-z][A-Za-z0-9]{1,9})-([0-9]{1,6})\b')
 
 
@@ -135,7 +135,7 @@ def parse_issue_keys(text: str, projects: Dict[str, str]) -> List[Tuple[str, str
         projects: Prefix -> canonical project, from `load_projects`.
 
     Returns:
-        Pairs of (`INV-4131`, `INV`).
+        Pairs of (`ORB-4131`, `ORB`).
     """
     found: List[Tuple[str, str]] = []
     seen = set()
@@ -143,7 +143,7 @@ def parse_issue_keys(text: str, projects: Dict[str, str]) -> List[Tuple[str, str
         project = projects.get(match.group(1).upper())
         if project is None:
             continue
-        # Numbers are normalised by int() so `INV-0042` and `INV-42` are one
+        # Numbers are normalised by int() so `ORB-0042` and `ORB-42` are one
         # issue; Jira does not pad, so the padded spelling is the typo.
         key = f'{project}-{int(match.group(2))}'
         if key not in seen:
@@ -229,9 +229,9 @@ def is_bot_login(login: str) -> bool:
     """Classify a login as a bot account.
 
     **Not** a substring test on `bot`: a login can contain the substring and
-    still be a person -- one such account had 2453 commits in the org this was
-    built against. GitHub app accounts end in a bracketed `[bot]` suffix; the
-    rest are named explicitly.
+    still be a person -- one such account was among the most prolific
+    committers in the org this was built against. GitHub app accounts end in a
+    bracketed `[bot]` suffix; the rest are named explicitly.
     """
     return login.endswith('[bot]') or login in sqlite_store.BOT_LOGINS
 
@@ -239,10 +239,10 @@ def is_bot_login(login: str) -> bool:
 def seed_identities(conn) -> Dict[str, int]:
     """Fill `identities` from the (email -> login) mapping in `commits`.
 
-    Verified as a function over this data: no email in 113,525 commits maps to
-    two logins. Rows already present are left alone, so a hand correction
-    survives every future reindex -- that is the intended way to attach the
-    5971 commits whose author has no linked GitHub account.
+    Verified as a function over a real store: no email mapped to two logins.
+    Rows already present are left alone, so a hand correction survives every
+    future reindex -- that is the intended way to attach the commits whose
+    author has no linked GitHub account.
     """
     pairs = conn.execute("""
         SELECT DISTINCT LOWER(author_email) AS email, author_login

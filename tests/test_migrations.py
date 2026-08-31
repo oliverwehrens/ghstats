@@ -132,10 +132,10 @@ class TeamRepoKeyTest(unittest.TestCase):
 
     Resolving a grant through `repo_id()` inserts the repository when absent,
     and team grants reach archived repositories the sweep skips -- which added
-    562 coverage-less rows to `repos` on the real store. `coverage_summary`
-    cross-joins every repository against every kind and `unusable_pairs` turns a
-    missing pair into a hard error, so every window-taking command refused for
-    every member. This is that regression, pinned.
+    hundreds of coverage-less rows to `repos` on the real store.
+    `coverage_summary` cross-joins every repository against every kind and
+    `unusable_pairs` turns a missing pair into a hard error, so every
+    window-taking command refused for every member. This is that regression, pinned.
     """
 
     def setUp(self):

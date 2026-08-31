@@ -67,8 +67,8 @@ class BotClassificationTest(unittest.TestCase):
             self.assertTrue(is_bot_login(login), login)
 
     def test_a_login_containing_bot_is_still_a_person(self):
-        """One real org had 2453 commits behind such a login. A `bot` substring
-        test loses every one of them."""
+        """One real org had a prolific committer behind such a login. A `bot`
+        substring test loses every one of their commits."""
         self.assertFalse(is_bot_login('robotnik'))
 
     def test_ordinary_logins_are_people(self):

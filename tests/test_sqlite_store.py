@@ -177,7 +177,7 @@ class SchemaTest(unittest.TestCase):
         conn.close()
 
     def test_same_oid_survives_in_two_repos(self):
-        """896 real commits do this -- some repos in the org are forks.
+        """A great many real commits do this, wherever repos are forks.
 
         A bare `oid` primary key would discard one copy silently.
         """
