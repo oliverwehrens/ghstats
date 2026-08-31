@@ -65,7 +65,7 @@ Install into a virtualenv, so the `ghstats-*` commands and those two libraries s
 your system Python:
 
 ```bash
-git clone https://github.com/owehrens/ghstats.git
+git clone https://github.com/oliverwehrens/ghstats.git
 cd ghstats
 
 python3 -m venv .venv
