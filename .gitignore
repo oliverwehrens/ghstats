@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project-specific
+.cache/
+*.cache
+*.log
+
+# Repository activity cache
+.cache/repos/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# GitHub token files (if stored locally)
+*.token
+token.txt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+
+
+# --- Generated output, and organization data ------------------------------
+# None of this belongs in the repository: it is either a build artifact of a
+# run or a list of real people. Keeping it out is what makes the repo
+# publishable while the working tree stays useful.
+
+# Written by `ghstats-sync` from live org membership: real GitHub logins
+/members.txt
+
+# Left over from the removed HTML report pipeline. Nothing writes these now,
+# but an existing working tree still has them and they hold per-person data.
+reports/
+/report.html
+
+# Hand-maintained repository and inactivity lists
+/repos.txt
+/inactive
+cache.tgz
+
+# virtualenvwrapper writes the env name to a file, which `.venv/` does not match
+/.venv
+
+# uv writes this next to pyproject.toml; the project pins nothing, so it is
+# a local resolution rather than a shared lock.
+uv.lock
+
+# Playwright MCP scratch output -- page snapshots of the running explorer,
+# which contain whatever real data the store held at the time.
+.playwright-mcp/

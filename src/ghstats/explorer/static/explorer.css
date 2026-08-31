@@ -1,0 +1,418 @@
+/* ghstats explorer.
+ *
+ * Colour roles come from the validated categorical palette; the four series
+ * slots are the four event kinds, assigned by identity and never re-assigned by
+ * rank, so filtering the stream does not repaint the survivors.
+ *
+ * Dark mode is a selected set of steps for the dark surface, not an inversion.
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;      /* card */
+  --plane:     #f9f9f7;      /* page */
+  --ink:       #0b0b0b;
+  --ink-2:     #52514e;
+  --ink-muted: #898781;
+  --grid:      #e1e0d9;
+  --baseline:  #c3c2b7;
+  --border:    rgba(11, 11, 11, .10);
+  --good:      #006300;
+
+  --s1: #2a78d6;             /* commit  */
+  --s2: #eb6834;             /* pull    */
+  --s3: #1baf7a;             /* merge   */
+  --s4: #eda100;             /* review  */
+
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane:     #0d0d0d;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --ink-muted: #898781;
+    --grid:      #2c2c2a;
+    --baseline:  #383835;
+    --border:    rgba(255, 255, 255, .10);
+    --good:      #0ca30c;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --s4: #c98500;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --plane:     #0d0d0d;
+  --ink:       #ffffff;
+  --ink-2:     #c3c2b7;
+  --ink-muted: #898781;
+  --grid:      #2c2c2a;
+  --baseline:  #383835;
+  --border:    rgba(255, 255, 255, .10);
+  --good:      #0ca30c;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--s1); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* -- header ------------------------------------------------------------- */
+
+.top {
+  display: flex; align-items: center; gap: 20px;
+  padding: 10px 18px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 40;
+}
+
+.brand { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.brand .mark {
+  width: 10px; height: 10px; border-radius: 3px;
+  background: var(--s1); align-self: center;
+}
+.brand-name { font-weight: 650; letter-spacing: -.01em; }
+.brand-sub { color: var(--ink-muted); font-size: 12.5px; font-family: var(--mono); }
+
+.searchbox { position: relative; flex: 1; max-width: 520px; }
+.searchbox input {
+  width: 100%; padding: 7px 11px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--plane); color: var(--ink); font: inherit;
+}
+.searchbox input:focus { outline: 2px solid var(--s1); outline-offset: -1px; }
+
+.suggest {
+  position: absolute; top: calc(100% + 5px); left: 0; right: 0;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .16);
+  max-height: 60vh; overflow-y: auto; z-index: 50; padding: 5px;
+}
+.suggest .grp {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-muted); padding: 7px 9px 3px;
+}
+.suggest button {
+  display: block; width: 100%; text-align: left;
+  padding: 6px 9px; border: 0; border-radius: 6px;
+  background: none; color: var(--ink); font: inherit; cursor: pointer;
+}
+.suggest button:hover, .suggest button[aria-selected="true"] {
+  background: color-mix(in oklab, var(--s1) 13%, transparent);
+}
+
+.freshness { flex: none; font-size: 12px; display: flex; align-items: center; gap: 7px; }
+.freshness .dot { width: 8px; height: 8px; border-radius: 50%; }
+.fresh-ok    .dot { background: var(--good); }
+.fresh-warn  .dot { background: var(--s4); }
+.fresh-stale .dot { background: #e34948; }
+.freshness .txt { color: var(--ink-2); }
+
+/* -- filters ------------------------------------------------------------ */
+
+.filters {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 9px 18px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 51px; z-index: 30;
+}
+
+.presets { display: flex; gap: 2px; }
+.presets button {
+  padding: 4px 10px; border: 1px solid var(--border);
+  background: var(--plane); color: var(--ink-2);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.presets button:first-child { border-radius: 7px 0 0 7px; }
+.presets button:last-child { border-radius: 0 7px 7px 0; }
+.presets button.on {
+  background: var(--s1); border-color: var(--s1); color: #fff; font-weight: 600;
+}
+
+.dates { display: flex; align-items: center; gap: 5px; }
+.dates input {
+  padding: 4px 7px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--plane); color: var(--ink); font: inherit; font-size: 12.5px;
+}
+.dates .to { color: var(--ink-muted); }
+
+.kinds { display: flex; gap: 12px; }
+.kinds label, .toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12.5px; color: var(--ink-2); cursor: pointer; user-select: none;
+}
+.kinds .sw { width: 9px; height: 9px; border-radius: 2px; }
+.kinds .s1 { background: var(--s1); }
+.kinds .s2 { background: var(--s2); }
+.kinds .s3 { background: var(--s3); }
+.kinds .s4 { background: var(--s4); }
+.kinds input:not(:checked) ~ .sw { opacity: .25; }
+
+.toggle select, .needle {
+  padding: 3px 7px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--plane); color: var(--ink); font: inherit; font-size: 12.5px;
+}
+.needle { min-width: 190px; }
+
+/* -- shell -------------------------------------------------------------- */
+
+.shell { display: flex; align-items: flex-start; gap: 0; }
+
+.side {
+  flex: none; width: 168px; padding: 16px 10px;
+  position: sticky; top: 100px; align-self: flex-start;
+}
+.side a {
+  display: block; padding: 7px 11px; border-radius: 8px;
+  color: var(--ink-2); font-weight: 500;
+}
+.side a:hover { background: var(--surface-1); text-decoration: none; }
+.side a.on {
+  background: color-mix(in oklab, var(--s1) 14%, transparent);
+  color: var(--s1); font-weight: 650;
+}
+.side-note {
+  margin-top: 16px; padding: 9px 11px;
+  font-size: 11.5px; line-height: 1.45; color: var(--ink-muted);
+  border-top: 1px solid var(--border);
+}
+
+main { flex: 1; min-width: 0; padding: 16px 18px 60px 8px; }
+.loading { color: var(--ink-muted); padding: 40px 0; }
+.reloading { opacity: .45; transition: opacity .12s; }
+
+/* -- cards, tiles ------------------------------------------------------- */
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 15px 17px; margin-bottom: 14px;
+}
+.card > h2 {
+  margin: 0 0 12px; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted);
+}
+
+.crumb { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 12px; }
+.crumb h1 { margin: 0; font-size: 21px; letter-spacing: -.02em; font-weight: 660; }
+.crumb .kind-of {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-muted); border: 1px solid var(--border);
+  padding: 2px 7px; border-radius: 20px;
+}
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 1px;
+         background: var(--border); border-radius: var(--radius); overflow: hidden; }
+.tile { background: var(--surface-1); padding: 12px 14px; }
+.tile .n { font-size: 22px; font-weight: 640; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.tile .l { font-size: 11.5px; color: var(--ink-muted); margin-top: 1px; }
+.tile.pos .n { color: var(--good); }
+.tile.neg .n { color: #e34948; }
+
+/* The Day entry point's picker: a date field and the button that opens it.
+   The button exists because a date input reports no change when the day picked
+   is the day already in the field. */
+.daypick { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.daypick input {
+  padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--plane); color: var(--ink); font: inherit; font-size: 12.5px;
+}
+.daypick button {
+  padding: 5px 13px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--plane); color: var(--ink-2); font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+.daypick button:hover { border-color: var(--s1); color: var(--s1); }
+
+/* -- charts ------------------------------------------------------------- */
+
+/* Chart.js sizes itself from its container, so the container is what has a
+   height. `position: relative` is what its responsive mode measures against. */
+.canvas-box { position: relative; width: 100%; }
+.canvas-box canvas { display: block; }
+
+/* The legend is a filter, not a caption: each key writes the URL. */
+.legend { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 12px; }
+.legend .key {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 9px 2px 7px; border: 1px solid transparent; border-radius: 20px;
+  background: none; color: var(--ink-2); font: inherit; font-size: 12px;
+  cursor: pointer;
+}
+.legend .key:hover { border-color: var(--border); background: var(--plane); }
+.legend .key:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+.legend .key.off { color: var(--ink-muted); text-decoration: line-through; }
+.legend .key.off i { opacity: .28; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+
+/* -- contribution calendar ---------------------------------------------- */
+
+/* A sequential ramp mixed from the primary accent rather than a fifth hue: the
+   four categorical slots are spoken for by the four event kinds, and a green
+   here would read as "merge". Steps are mixed against the card, so the ramp is
+   correct in both themes without a second set of values. */
+.cal-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+.cal { display: block; }
+.cal text.wd, .cal text.mon {
+  fill: var(--ink-muted); font-size: 10px; font-family: var(--sans);
+}
+.cal rect { cursor: pointer; }
+.cal rect:hover { stroke: var(--ink-2); stroke-width: 1; }
+.cal rect:focus-visible { outline: 2px solid var(--s1); outline-offset: 1px; }
+
+.lv0 { fill: var(--grid); background: var(--grid); }
+.lv1 { fill: color-mix(in oklab, var(--s1) 26%, var(--surface-1));
+       background: color-mix(in oklab, var(--s1) 26%, var(--surface-1)); }
+.lv2 { fill: color-mix(in oklab, var(--s1) 50%, var(--surface-1));
+       background: color-mix(in oklab, var(--s1) 50%, var(--surface-1)); }
+.lv3 { fill: color-mix(in oklab, var(--s1) 74%, var(--surface-1));
+       background: color-mix(in oklab, var(--s1) 74%, var(--surface-1)); }
+.lv4 { fill: var(--s1); background: var(--s1); }
+
+.cal-key {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 8px; font-size: 11px; color: var(--ink-muted);
+}
+.cal-key i { width: 11px; height: 11px; border-radius: 2.5px; display: inline-block; }
+.cal-key span:last-child { margin-left: 2px; }
+
+.tip {
+  position: fixed; z-index: 90; pointer-events: none;
+  background: var(--surface-1); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; min-width: 130px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+}
+.tip .th { font-weight: 650; margin-bottom: 5px; }
+.tip .row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+.tip .row b { font-variant-numeric: tabular-nums; }
+.tip .row i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.tip .row span { color: var(--ink-2); flex: 1; }
+.tip .hint { color: var(--ink-muted); font-size: 11px; margin-top: 5px; }
+
+/* -- tables ------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--ink-muted);
+  padding: 5px 9px 5px 0; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+td { padding: 6px 9px 6px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+tbody tr:hover { background: color-mix(in oklab, var(--s1) 5%, transparent); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num { color: var(--ink-2); }
+td.num .diff { white-space: nowrap; }
+
+/* The date controls do not apply to a single-day view: the day is in the path. */
+.filters.day-pinned .presets, .filters.day-pinned .dates { opacity: .4; pointer-events: none; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* -- event stream ------------------------------------------------------- */
+
+/* The day band is the loudest rule on the page below a heading. A hundred rows
+   of the same weight read as one run, and the only thing that separated
+   Tuesday from Wednesday used to be a timestamp nobody parses at a glance. It
+   bleeds through the card padding so the break crosses the whole card. */
+.stream .day-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 20px -17px 0; padding: 6px 17px;
+  border-top: 1px solid var(--baseline);
+  border-bottom: 1px solid var(--grid);
+  background: color-mix(in oklab, var(--s1) 5%, var(--surface-1));
+}
+.stream > .day-head:first-child { margin-top: 0; }
+.stream .day-head .d {
+  font-size: 12.5px; font-weight: 650; letter-spacing: -.01em; color: var(--ink);
+}
+.stream .day-head .d:hover { color: var(--s1); text-decoration: none; }
+.stream .day-head .n {
+  font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+}
+
+/* Repositories inside a day: a rail, so the rows visibly hang off a heading
+   rather than merely following one. */
+.stream .repo-group {
+  border-left: 2px solid var(--grid); padding-left: 12px; margin: 4px 0 4px 3px;
+}
+.stream .repo-group:hover { border-left-color: color-mix(in oklab, var(--s1) 45%, var(--grid)); }
+.stream .repo-head {
+  display: flex; align-items: baseline; gap: 8px; padding: 8px 0 1px;
+}
+.stream .repo-head a {
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); font-weight: 500;
+}
+.stream .repo-head .n {
+  font-size: 10.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+}
+
+.ev { display: flex; gap: 11px; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+.ev:last-child { border-bottom: 0; }
+.stream .repo-group .ev:last-child { border-bottom: 0; }
+.ev .badge {
+  flex: none; width: 62px; font-size: 10px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 0 0; text-align: left;
+}
+.ev.commit .badge { color: var(--s1); }
+.ev.pull   .badge { color: var(--s2); }
+.ev.merge  .badge { color: var(--s3); }
+.ev.review .badge { color: var(--s4); }
+.ev .body { flex: 1; min-width: 0; }
+.ev .subj { font-weight: 480; word-break: break-word; }
+.ev .meta {
+  font-size: 11.5px; color: var(--ink-muted);
+  display: flex; gap: 9px; flex-wrap: wrap; margin-top: 2px; align-items: center;
+}
+.ev .meta a { color: var(--ink-2); }
+.ev .when { font-family: var(--mono); font-size: 11px; }
+.ev .diff { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.ev .diff .add { color: var(--good); }
+.ev .diff .del { color: #e34948; }
+.chip {
+  display: inline-block; padding: 1px 6px; border-radius: 20px;
+  border: 1px solid var(--border); font-size: 10.5px;
+  color: var(--ink-2); font-family: var(--mono);
+}
+.chip.ai { border-color: color-mix(in oklab, var(--s4) 55%, var(--border)); }
+.chip.issue:hover { border-color: var(--s1); color: var(--s1); text-decoration: none; }
+
+.more {
+  margin-top: 12px; padding: 7px 13px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--plane); color: var(--ink-2);
+  font: inherit; cursor: pointer;
+}
+.more:hover { border-color: var(--s1); color: var(--s1); }
+.count-note { font-size: 11.5px; color: var(--ink-muted); margin-bottom: 9px; }
+
+.warn {
+  border-left: 3px solid var(--s4); padding: 8px 12px; margin-bottom: 12px;
+  background: color-mix(in oklab, var(--s4) 8%, var(--surface-1));
+  border-radius: 0 8px 8px 0; font-size: 12.5px; color: var(--ink-2);
+}
+.empty { color: var(--ink-muted); padding: 22px 0; }
+.pills { display: flex; gap: 6px; flex-wrap: wrap; }

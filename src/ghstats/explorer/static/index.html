@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghstats explorer</title>
+<link rel="stylesheet" href="/explorer.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%274%27 fill=%27%232a78d6%27/%3E%3C/svg%3E">
+</head>
+<body data-palette="#2a78d6,#eb6834,#1baf7a,#eda100">
+
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="brand-name">ghstats</span>
+    <span class="brand-sub" id="org">&nbsp;</span>
+  </div>
+
+  <div class="searchbox">
+    <input id="search" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Find a person, repository, team or issue key…"
+           aria-label="Search" aria-controls="suggest" aria-expanded="false">
+    <div class="suggest" id="suggest" role="listbox" hidden></div>
+  </div>
+
+  <div class="freshness" id="freshness" title="How far behind the store is"></div>
+</header>
+
+<!-- Filters: one row, above everything they scope. -->
+<div class="filters" id="filters">
+  <div class="presets" role="group" aria-label="Date range presets">
+    <button data-days="1">Today</button>
+    <button data-days="7">7d</button>
+    <button data-days="30" class="on">30d</button>
+    <button data-days="90">90d</button>
+    <button data-days="0">All</button>
+  </div>
+  <label class="dates">
+    <input type="date" id="from" aria-label="From date">
+    <span class="to">→</span>
+    <input type="date" id="to" aria-label="To date">
+  </label>
+
+  <div class="kinds" role="group" aria-label="Event kinds">
+    <label><input type="checkbox" value="commit" checked><span class="sw s1"></span>commits</label>
+    <label><input type="checkbox" value="pull" checked><span class="sw s2"></span>PRs opened</label>
+    <label><input type="checkbox" value="merge" checked><span class="sw s3"></span>merges</label>
+    <label><input type="checkbox" value="review" checked><span class="sw s4"></span>reviews</label>
+  </div>
+
+  <label class="toggle"><input type="checkbox" id="bots"> bots</label>
+  <label class="toggle ai">
+    AI
+    <select id="ai" aria-label="AI assistance filter">
+      <option value="">any</option>
+      <option value="only">assisted only</option>
+      <option value="none">unassisted only</option>
+    </select>
+  </label>
+  <input id="q" type="search" class="needle" placeholder="text in message / title"
+         aria-label="Filter by text">
+</div>
+
+<div class="shell">
+  <nav class="side" aria-label="Entry points">
+    <a href="#/users" data-tab="users">People</a>
+    <a href="#/repos" data-tab="repos">Repositories</a>
+    <a href="#/teams" data-tab="teams">Teams</a>
+    <a href="#/projects" data-tab="projects">Jira</a>
+    <a href="#/day" data-tab="day">Day</a>
+    <div class="side-note" id="sidenote"></div>
+  </nav>
+
+  <main id="main" aria-live="polite">
+    <div class="loading">Loading…</div>
+  </main>
+</div>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<!-- Vendored, not fetched: everything downstream of the sync is offline. -->
+<script src="/vendor/chart.umd.min.js"></script>
+<script src="/charts.js"></script>
+<script src="/explorer.js"></script>
+</body>
+</html>

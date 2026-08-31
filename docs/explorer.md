@@ -1,0 +1,312 @@
+# The explorer
+
+> Measurements and examples below come from the one organization this was developed
+> against, referred to as the source organization. Nothing org-specific ships in the
+> code — see [Configuring for your organization](../README.md#configuring-for-your-organization).
+
+This is how the collected data is read. The explorer answers *what*: which
+commits, whose, in which repository, against which ticket — questions whose
+shape is not known until someone asks one.
+
+It replaced a pre-rendered HTML report that answered only *how much* — counts and
+histograms, one file per person, generated ahead of time. That report is gone;
+the reasoning for serving instead of generating is below.
+
+```bash
+ghstats-explore --timezone Europe/Berlin --open
+```
+
+## Why it is served, not generated
+
+The obvious extension of the old pipeline would have been more static HTML. That
+does not work here, and the reason is arithmetic: 218 members × 1198
+repositories × 595 days is not a set of files anyone can pre-render. Nor can the
+answer be embedded in one page — the store is 96MB, and the interesting content
+is the commit messages, which is most of it.
+
+So the slices live as functions over the store (`explorer/queries.py`) and a
+loopback HTTP server exposes them (`explorer/server.py`). The store stays the
+single source of truth, and reads stay a pure function of whatever the last sync
+wrote — the same property the offline pipeline has.
+
+Three properties of the server are deliberate:
+
+| Property | Why |
+|---|---|
+| SQLite opened `mode=ro` | A bug in a handler cannot damage a store that cost hours of API budget. A sync can run against it concurrently — that is what WAL is for. |
+| Bound to 127.0.0.1, `Host` header checked | There is no auth because there is no remote listener. The header check is against DNS rebinding: a page in your browser can point a name it controls at 127.0.0.1. |
+| One connection per thread | `sqlite3` connections are not thread-safe and `ThreadingHTTPServer` hands each request its own. |
+
+## The event stream is the spine
+
+Every entry point is a set of aggregates plus a link into one filterable query
+over commits, pull requests, merges and reviews:
+
+```
+GET /api/events?from=&to=&user=&repo=&team=&project=&issue=&kinds=&q=&ai=&bots=
+```
+
+Adding an entry point means adding a summary and a filter, never a new way to
+list activity. The drill-down is where the answer lives, so there is exactly one
+implementation of it.
+
+**A pull request contributes two events, not one.** It was opened on one day and
+merged on another. "What did she work on" usually means the opening; "what
+changed on Tuesday" usually means the merge. Collapsing both onto `created_at`
+answers the second question with the wrong day's data, silently — so `pull` and
+`merge` are separate kinds.
+
+### How the stream reads
+
+Rows are banded by local day, in the same zone `local_date` groups the charts
+by — a stream dated in the reader's zone would file a row under a day header
+the charts never counted it in. The band bleeds through the card padding
+because a hundred rows of even weight read as one run, and a timestamp is not
+something the eye parses at a glance. Each row then carries only its clock: the
+date is on the band above it.
+
+On a person's page each day is additionally split by repository, in repository
+order. "What was she doing on Tuesday" is answered by two repositories and
+eleven commits, not by eleven commits sorted by minute.
+
+`/api/events` is the one endpoint that takes its entity as a *parameter* rather
+than a path segment, because it has no segment to carry one. Paging past the
+first hundred rows goes there rather than back to the entity endpoint: the next
+page is a hundred more rows, not a recount of every aggregate behind them.
+Because a day can straddle the page boundary, the client repaints the whole
+list rather than appending — otherwise the day continuing onto page two starts
+again under a duplicate header.
+
+### Entry points
+
+| Path | Answers |
+|---|---|
+| `#/users`, `#/users/<login>` | What did this person do — repos, issues, review partners, AI share |
+| `#/repos`, `#/repos/<name>` | What changed here, and who changed it |
+| `#/teams`, `#/teams/<slug>` | What a group changed, rolled up and per member |
+| `#/projects`, `#/projects/<key>` | A Jira project's issues and who moved them |
+| `#/issues/<key>` | Everything referencing one key, across repos and people |
+| `#/day` | Which day to open — a picker, the daily bars and the calendar |
+| `#/day/<date>` | One local day, cross-cut by team, repository and person |
+
+The hash is the whole state, so every view is bookmarkable and sendable. Clicking
+a bar in any activity chart opens that day.
+
+## Local days, UTC storage
+
+The store holds UTC at whole-second precision. "What changed on Tuesday" is a
+question about a *local* day, so a window arrives as local dates and is converted
+to a half-open UTC instant range before it reaches SQL (`window_utc`) — which
+keeps the comparison on the indexed columns.
+
+Grouping for the charts uses `local_date` / `local_hour` / `local_dow`, Python
+functions registered per connection. They defer to `zoneinfo` per row rather than
+adding a fixed offset, because **a fixed offset is wrong half the year**: the
+window this store covers spans four DST transitions, and a constant `+02:00` puts
+January activity on the wrong day either side of 23:00 local.
+
+`to` is inclusive on the way in and exclusive on the way out. Comparing against
+`<= '2026-08-17'` would keep only the midnight second of the final day.
+
+## Teams
+
+`ghstats-sync` sweeps them, like it does members — 66 teams, 15 GraphQL points.
+Skip with `--skip-teams`.
+
+Teams are fetched 20 at a time, not 100: GraphQL bills nested connections
+multiplicatively, so `teams(100) { members(100) }` is priced as 10,000 nodes.
+The inner connections paginate too, and a team with more than 100 members or
+repositories is drained with follow-up queries — reading only the first page
+would silently truncate the largest teams, which are the ones that matter.
+
+**Membership is current-only.** GitHub reports who is on a team today with no
+history, so a window that predates someone's move credits their old work to
+their new team. That is right for last week and wrong across a reorg, and the
+team view says so on screen rather than leaving it to be discovered.
+
+**75 of 218 members are on no team.** `team_list` reports that count, because
+team views otherwise look like they cover the organization when they cover two
+thirds of it.
+
+**`team_repos` is keyed on repository *name*, with no foreign key into `repos`.**
+The obvious design resolves each grant through `repo_id()`, which inserts the
+repository when absent — and team grants reach archived repositories the sweep
+deliberately skips. On this organization that added 562 coverage-less rows to
+`repos`; `coverage_summary` cross-joins every repository against every kind,
+`unusable_pairs` turns a missing pair into a hard error, and every
+window-taking command refused for all 218 members. Storing the name records what
+GitHub said without asserting the repository is tracked. 1,283 of 3,137 grants
+point at repositories outside the sweep, and the UI marks them.
+
+## Jira
+
+Issue keys are parsed out of commit messages and PR titles by `ghstats-reindex`
+into `issue_refs` — derived, offline, never fetched. Adding a project and
+reindexing reclassifies twenty months of history without an API call, the same
+payoff the co-author trailers get.
+
+**The extractor cannot be an open regex.** `[A-Z]{2,}-[0-9]+` matches 132
+distinct prefixes across these commit messages and most are not issues:
+
+```
+ISO-8601   HTTP-2   AES-256   RFC-3339   PSR-4   SHA-1   UTF-8
+ADR-001    R2025-04  P1-3     STEP-1     E2E-1   TLS13-…
+```
+
+Extracting those invents a hundred phantom projects. So the pattern is
+permissive and `jira_projects` decides — a curated table, seeded from
+`JIRA_PROJECT_SEED`, `INSERT OR IGNORE` so hand additions survive a reindex.
+
+**One project arrives under five spellings.** In the source organization one
+project key was typed four different wrong ways — a transposition, a dropped
+leading letter, two other slips — another was typed with a zero for its O, and a
+third picked up an unrelated product name. The table maps alias → canonical, so
+`WARRENTY-4131` and `WARRANTY-4131` are one issue — which is what they are in
+Jira. Numbers are normalised through `int()`, so `INV-0042` is `INV-42`.
+
+Matching is **case-insensitive**, which the whitelist makes safe: 533 keys here
+are lowercase, usually a branch name carried into a merge commit, and a
+case-sensitive pattern loses every one.
+
+To adopt a project that shows up later:
+
+```bash
+ghstats-reindex --unknown-issues     # key-shaped prefixes matching no project
+```
+
+Expect noise — `ISO`, `HTTP` and `AES` will always be near the top, because
+standards are written the way issue keys are. Adopt one with an `INSERT` into
+`jira_projects` and reindex.
+
+### References versus activity
+
+An issue's **reference** count and its **event** count answer different
+questions, and they do not match:
+
+- `issue_refs` counts text naming a key. A review names nothing.
+- The event stream reaches a review through the pull request it is on, so
+  reviewing the PR that implements an issue counts as work on that issue.
+
+Both are right. The first is "how often was this key written", the second is
+"what work touched it".
+
+## Bots
+
+`bot_logins` is derived by `ghstats-reindex`. Two shapes that look equivalent
+are not:
+
+- `login LIKE '%bot%'` classifies a person whose login merely contains the
+  substring as an automation — one such account had 2453 commits in the source
+  organization.
+- `login NOT LIKE '%[bot]'` catches bot commits and **no** bot pull requests,
+  because GraphQL resolves commit authorship to the account record (which carries
+  the suffix) while `PullRequest.author` returns the bare handle. The same
+  account is `renovate[bot]` on a commit and `renovate` on a PR — and Renovate
+  opened 15,016 PRs here, more than any human.
+
+So the table records both spellings, derived from evidence: any login seen
+suffixed anywhere, plus its bare form when that bare form is not an active
+member. The membership guard is what keeps a hypothetical human `renovate` out.
+
+**Review-only automations need the curated list.** The code review apps author
+reviews and nothing else, so no suffixed spelling exists anywhere in the store to
+derive the bare one from. `cursor` (Bugbot, 2256 reviews),
+`copilot-pull-request-reviewer` (1988), `renovate-approve` (390) and `claude`
+(11) together account for 4,645 of 32,877 reviews — 14% — and every one would
+otherwise read as a person reviewing code. They live in `BOT_LOGINS`.
+
+To find more:
+
+```sql
+SELECT v.author_login, COUNT(*) FROM reviews v
+ WHERE v.author_login NOT IN (SELECT login FROM members)
+   AND v.author_login NOT IN (SELECT login FROM bot_logins)
+   AND NOT EXISTS (SELECT 1 FROM commits c
+                    WHERE c.author_login = v.author_login)
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Read the result before adding anything — it also surfaces people who left the
+organization, whose reviews are real.
+
+## Schema migrations
+
+`connect()` now carries a ladder. Before it, any `user_version` mismatch was a
+hard error, which for a 96MB store would have meant re-syncing twenty months of
+history to add a table.
+
+Every migration is additive — new tables only, no `ALTER`, no rewrite — so it is
+instant at any size and cannot damage the collected history. `V4_TABLES` is
+applied both by a fresh install and by the v3→v4 step, so the two paths converge
+by construction; `tests/test_migrations.py` asserts a migrated store and a fresh
+one have byte-identical schemas, which is the alarm for someone adding a table to
+one path and forgetting the other.
+
+A version *newer* than the code understands is still refused. That is not
+migratable and must not be guessed at.
+
+## The charts
+
+Chart.js, vendored under `static/vendor/` rather than linked from a CDN.
+Everything downstream of `ghstats-sync` is offline by contract; a chart that
+only draws when jsdelivr answers would make *looking at the results* the step
+that needs the network. The static report loads the same version from the CDN,
+where a 200KB inline copy would not be worth it — the two versions are meant to
+stay in step, and `static/vendor/README.md` says where to change both.
+
+Three graphs, and the same three everywhere they make sense — the People entry
+point draws them over everyone, a person's page draws them over one person. A
+personal rhythm only means something against the one it sits inside, and a
+shape you have to remember from another page is not a comparison.
+
+| Graph | Shape | Why |
+|---|---|---|
+| Activity by day | Stacked bars, one stack per local day, quiet days included | Clicking a stack opens that day; a spike is only useful once you can reach it |
+| Contribution calendar | Week grid, Monday at the top | Gaps. A fortnight of silence is a shape here and a flat stretch of axis on the bars |
+| Activity patterns | Grouped bars by weekday, filled lines by hour | Whether reviews follow commits through the week and through the day |
+
+**The daily series carries its zeroes.** `_by_day` returns every day in the
+window, not only the days something happened on. Omitting them draws a
+fortnight of silence as no gap at all — the bars either side end up adjacent
+and the axis quietly relabels itself, so a stop-start month reads as a steady
+one and a working week is indistinguishable from a seven-day grind. The span is
+the requested window, or the span of the data when the window is open-ended,
+clamped to today; an empty slice still returns nothing, so "no activity in this
+window" stays a sentence rather than a flat row of zeroes.
+
+The calendar is not a Chart.js chart. It is days on a week grid with month
+rules — layout, not a plot — and the matrix plugin that could draw it costs
+another dependency to end up with less control over the thing GitHub renders as
+a plain grid. Its ramp is mixed from the primary accent rather than a fifth
+hue, because the four categorical slots are spoken for and a green square would
+read as "merge". The steps are quartiles over the days that had activity, so
+the ramp describes the slice it was drawn for — which is why the key says
+"Less / More" and not a number.
+
+Two things the switch to a canvas cost, and what was done about them:
+
+- **Keyboard.** The hand-drawn bars were focusable and openable with Enter; a
+  canvas is one element. Each chart carries an `aria-label` with its totals,
+  the calendar keeps a roving tabindex — one tab stop, arrows within it, Enter
+  to open a day — and the event stream underneath is the same data as text.
+- **Colour on a theme flip.** Colour is baked into a chart when it is built, so
+  the client rebuilds the view when `prefers-color-scheme` changes. Nothing
+  watches for a resize any more: Chart.js observes its own container, which
+  removed a refetch that used to fire on every window drag.
+
+The legend is DOM, not Chart.js. A Chart.js legend hides datasets in local
+state, which would put a second, invisible filter next to the checkbox row;
+clicking a key here writes the same `kinds` parameter the checkboxes write, so
+a legend, a checkbox and a pasted link cannot disagree.
+
+The four event kinds take the first four slots of a categorical palette
+validated for colour-vision deficiency and contrast in both light and dark mode
+(worst adjacent CVD ΔE 9.1 light / 8.4 dark against a ≥8 target). Colour follows
+the kind, never its rank, so filtering the stream does not repaint the
+survivors. Three light-mode slots sit below 3:1 contrast, which obliges a table
+view — the event stream is that table.
+
+All data reaches the DOM through `textContent`. Commit messages, branch names and
+repository names are arbitrary strings from a third party; building HTML out of
+them by concatenation is how a commit message becomes script. A test pins the
+absence of `innerHTML` in the client.
