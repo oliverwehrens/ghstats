@@ -34,9 +34,9 @@ dependencies = [
 dev = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/owehrens/ghstats"
-Repository = "https://github.com/owehrens/ghstats"
-Issues = "https://github.com/owehrens/ghstats/issues"
+Homepage = "https://github.com/oliverwehrens/ghstats"
+Repository = "https://github.com/oliverwehrens/ghstats"
+Issues = "https://github.com/oliverwehrens/ghstats/issues"
 
 [project.scripts]
 # Only ghstats-sync touches the network; everything else reads the store.
