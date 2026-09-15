@@ -574,3 +574,26 @@ li.CodeMirror-hint-active { background: var(--s1); color: #fff; }
   color: var(--ink-muted); cursor: pointer;
 }
 .sql-lib-clear:hover { color: #e34948; }
+
+.sql-tools { align-items: center; justify-content: space-between; gap: 10px; }
+.sql-tabs { display: flex; gap: 2px; }
+.sql-tab {
+  padding: 3px 12px; border: 1px solid var(--border); background: var(--plane);
+  color: var(--ink-2); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.sql-tab:first-child { border-radius: 7px 0 0 7px; }
+.sql-tab:last-child { border-radius: 0 7px 7px 0; }
+.sql-tab.on { background: var(--s1); border-color: var(--s1); color: #fff; font-weight: 600; }
+
+.sql-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 4px 0 12px; }
+.sql-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); }
+.sql-ctl select {
+  padding: 3px 7px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--plane); color: var(--ink); font: 12px var(--mono);
+}
+.sql-ys { flex-wrap: wrap; }
+.sql-y { cursor: pointer; background: var(--plane); }
+.sql-y.on { border-color: var(--s1); color: var(--s1); background: color-mix(in oklab, var(--s1) 10%, transparent); }
+.sql-y:disabled { opacity: .45; cursor: not-allowed; }
+.sql-legend .key { cursor: default; }
+.sql-legend .key:hover { border-color: transparent; background: none; }

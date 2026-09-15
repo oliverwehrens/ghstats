@@ -790,3 +790,98 @@ function pullScatterChart(host, points, onPick) {
     },
   }));
 }
+
+/* -- SQL page ------------------------------------------------------------- */
+
+/**
+ * A chart of a query result, as shaped by `sqlChartShape` on the SQL page.
+ *
+ * Deliberately plain: one value axis (two measures of different scale belong
+ * in two queries, not on a second axis), series coloured by the four palette
+ * slots in the order the rows introduce them, and anything past the fourth
+ * already folded into a muted "Other" before it gets here.
+ *
+ * Returns the instance so the page can destroy it when the result is redrawn
+ * without a view swap.
+ */
+function sqlResultChart(host, shape) {
+  clear(host);
+  if (!shape.series.length) { noData(host, 'Nothing to plot.'); return null; }
+
+  const t = theme();
+  const slots = [t.commit, t.pull, t.merge, t.review];
+  const colour = (s, i) => (s.other ? t.tick : slots[i]);
+  const canvas = canvasHost(host, 320,
+    `${shape.type} chart of ${shape.series.map((s) => s.name).join(', ')} by ${shape.xTitle}`);
+
+  const scatter = shape.type === 'scatter';
+  const datasets = shape.series.map((s, i) => {
+    const c = colour(s, i);
+    if (scatter) {
+      return {
+        label: s.name, data: s.points,
+        backgroundColor: alpha(c, 0.55), borderColor: c, borderWidth: 1,
+        pointRadius: 4, pointHoverRadius: 6,
+      };
+    }
+    if (shape.type === 'line') {
+      return {
+        type: 'line', label: s.name, data: s.values,
+        borderColor: c, backgroundColor: c, borderWidth: 2,
+        pointRadius: shape.labels.length > 60 ? 0 : 2.5, pointHoverRadius: 5,
+        tension: 0.2, spanGaps: false,
+      };
+    }
+    return {
+      type: 'bar', label: s.name, data: s.values, backgroundColor: c,
+      borderRadius: 3, borderSkipped: 'start', maxBarThickness: 34,
+      categoryPercentage: 0.9, barPercentage: 0.96,
+      // A 2px surface gap between stacked segments and neighbouring bars.
+      borderColor: t.surface, borderWidth: shape.stacked ? { top: 2 } : 0,
+    };
+  });
+
+  const format = (v) => (v === null || v === undefined ? '–'
+    : Number.isInteger(v) ? num(v) : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 }));
+
+  const chart = new Chart(canvas, {
+    type: scatter ? 'scatter' : 'bar',
+    data: scatter ? { datasets } : { labels: shape.labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: scatter ? { mode: 'nearest', intersect: true } : { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: Object.assign(tooltipStyle(t), {
+          callbacks: scatter ? {
+            title: (items) => `${shape.xTitle} ${format(items[0].parsed.x)}`,
+            label: (item) => ` ${item.dataset.label}: ${format(item.parsed.y)}`,
+          } : {
+            title: (items) => `${shape.xTitle}: ${items[0].label}`,
+            label: (item) => ` ${item.dataset.label}: ${format(item.parsed.y)}`,
+          },
+        }),
+      },
+      scales: {
+        x: scatter ? {
+          type: 'linear',
+          border: { color: t.axis },
+          grid: { color: t.grid, drawTicks: false },
+          ticks: { color: t.tick, padding: 5, maxRotation: 0, callback: (v) => Number(v).toLocaleString() },
+          title: { display: true, text: shape.xTitle, color: t.tick, font: { size: 11 } },
+        } : Object.assign(categoryAxis(t, shape.stacked, { autoSkip: true, maxTicksLimit: 16 }), {
+          title: { display: true, text: shape.xTitle, color: t.tick, font: { size: 11 } },
+        }),
+        y: Object.assign(valueAxis(t, shape.stacked), {
+          beginAtZero: !scatter,
+          ticks: { color: t.tick, padding: 8, maxTicksLimit: 6, callback: (v) => Number(v).toLocaleString() },
+          title: { display: !!shape.yTitle, text: shape.yTitle || '', color: t.tick, font: { size: 11 } },
+        }),
+      },
+    },
+  });
+  CHARTS.push(chart);
+  return chart;
+}

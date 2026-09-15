@@ -201,6 +201,7 @@ async function viewSql() {
   } catch (err) {
     if (err === STALE) throw err;
     renderSqlParams(page, null);
+    dropSqlChart(page);
     clear(page.results);
     page.status.textContent = '';
     page.results.appendChild(el('div', { class: 'warn sql-error', text: String(err.message || err) }));
@@ -585,6 +586,7 @@ function renderSqlParams(page, bound) {
 
 function renderSqlResult(page, result) {
   renderSqlParams(page, result.parameters);
+  dropSqlChart(page);
   clear(page.results);
   page.status.textContent =
     `${num(result.row_count)} row${result.row_count === 1 ? '' : 's'} · ${num(result.elapsed_ms)} ms`;
@@ -612,9 +614,240 @@ function renderSqlResult(page, result) {
     }
     setTimeout(() => { copy.textContent = 'Copy as TSV'; }, 1500);
   });
-  card.appendChild(el('div', { class: 'sql-tools' }, [copy]));
-  card.appendChild(sqlTable(result));
+
+  // Table | Chart. Which one is showing, and how the chart is set up, lives in
+  // the hash like everything else -- but is written with replaceState, so
+  // changing an axis redraws from the rows in hand instead of re-running the
+  // query.
+  const { params } = parseHash();
+  const chartView = params.get('view') === 'chart';
+  const tabs = el('div', { class: 'sql-tabs', role: 'tablist' });
+  const body = el('div');
+  const tab = (label, isChart) => el('button', {
+    type: 'button', role: 'tab', class: 'sql-tab' + (chartView === isChart ? ' on' : ''),
+    'aria-selected': chartView === isChart ? 'true' : 'false', text: label,
+    onclick: () => {
+      replaceSqlHash({ view: isChart ? 'chart' : null });
+      renderSqlResult(page, result);
+    },
+  });
+  tabs.appendChild(tab('Table', false));
+  tabs.appendChild(tab('Chart', true));
+
+  card.appendChild(el('div', { class: 'sql-tools' }, [tabs, copy]));
+  card.appendChild(body);
   page.results.appendChild(card);
+  if (chartView) renderSqlChart(page, result, body);
+  else body.appendChild(sqlTable(result));
+}
+
+function dropSqlChart(page) {
+  if (!page.chart) return;
+  const index = CHARTS.indexOf(page.chart);
+  if (index >= 0) CHARTS.splice(index, 1);
+  try { page.chart.destroy(); } catch (err) { /* already detached */ }
+  page.chart = null;
+}
+
+/** Change the hash without the hashchange that would re-run the query. */
+function replaceSqlHash(changes) {
+  const { parts, params } = parseHash();
+  for (const [k, v] of Object.entries(changes)) {
+    if (v === null || v === undefined || v === '') params.delete(k);
+    else params.set(k, v);
+  }
+  const query = params.toString();
+  history.replaceState(null, '', '#/' + parts.map(encodeURIComponent).join('/') + (query ? '?' + query : ''));
+}
+
+const SQL_SERIES_MAX = 4;        // the palette's four slots
+const SQL_DATEISH = /^\d{4}-\d{2}(-\d{2}([T ][\d:.]+Z?)?)?$/;
+
+/** 'number', 'date' or 'text' for each column, from its non-null values. */
+function sqlColumnKinds(result) {
+  return result.columns.map((_, i) => {
+    const values = result.rows.map((row) => row[i]).filter((v) => v !== null);
+    if (values.length && values.every((v) => typeof v === 'number')) return 'number';
+    if (values.length && values.every((v) => typeof v === 'string' && SQL_DATEISH.test(v))) return 'date';
+    return 'text';
+  });
+}
+
+/**
+ * The chart settings from the hash, checked against this result's columns,
+ * with a guess for whatever is missing: x is the first date or text column,
+ * y the first numeric column other than x, and the type follows x -- a line over dates,
+ * a scatter over numbers, bars over anything else.
+ */
+function sqlChartConfig(result, kinds) {
+  const { params } = parseHash();
+  const columns = result.columns;
+  const numeric = columns.filter((_, i) => kinds[i] === 'number');
+
+  let x = params.get('cx');
+  if (!columns.includes(x)) {
+    x = columns.find((_, i) => kinds[i] !== 'number') || columns[0];
+  }
+  const xKind = kinds[columns.indexOf(x)];
+
+  let series = params.get('cs');
+  if (!columns.includes(series) || series === x) series = null;
+
+  let y = [];
+  try { y = JSON.parse(params.get('cy') || '[]'); } catch (err) { y = []; }
+  y = (Array.isArray(y) ? y : []).filter((name) => numeric.includes(name) && name !== x && name !== series);
+  // One measure by default: a second is a click away, and two columns of
+  // different scale on one axis flatten the smaller into the baseline.
+  if (!y.length) y = numeric.filter((name) => name !== x && name !== series).slice(0, 1);
+  y = y.slice(0, series ? 1 : SQL_SERIES_MAX);
+
+  let type = params.get('ct');
+  if (!['bar', 'line', 'scatter'].includes(type)) {
+    type = xKind === 'date' ? 'line' : xKind === 'number' ? 'scatter' : 'bar';
+  }
+  if (type === 'scatter' && xKind !== 'number') type = 'bar';
+  return { type, x, y, series, xKind };
+}
+
+/**
+ * Rows into series. With a series column, one y split by that column's values,
+ * in the order the rows introduce them; without, one series per y column.
+ * Past the fourth series the rest become "Other". Rows that share an x within
+ * a series are summed, and the notes say so.
+ */
+function sqlChartShape(result, config) {
+  const col = (name) => result.columns.indexOf(name);
+  const xi = col(config.x);
+  const notes = [];
+  const shape = { type: config.type, xTitle: config.x, yTitle: config.series ? config.y[0] : '', series: [], labels: [] };
+  if (!config.y.length) return { shape, notes: ['Pick at least one numeric column to plot.'] };
+
+  // (series name, y column index) for every row, in row order.
+  const entries = [];
+  if (config.series) {
+    const si = col(config.series);
+    const yi = col(config.y[0]);
+    result.rows.forEach((row) => entries.push([row[si] === null ? 'NULL' : String(row[si]), yi, row]));
+  } else {
+    result.rows.forEach((row) => config.y.forEach((name) => entries.push([name, col(name), row])));
+  }
+
+  const names = [];
+  entries.forEach(([name]) => { if (!names.includes(name)) names.push(name); });
+  const kept = names.length > SQL_SERIES_MAX ? names.slice(0, SQL_SERIES_MAX - 1) : names;
+  if (names.length > SQL_SERIES_MAX) {
+    notes.push(`${names.length} series: the first ${SQL_SERIES_MAX - 1} are drawn, the other ${names.length - kept.length} combined as Other. ORDER BY decides which come first.`);
+  }
+  const seriesOf = (name) => (kept.includes(name) ? name : 'Other');
+  const order = kept.concat(names.length > kept.length ? ['Other'] : []);
+
+  if (config.type === 'scatter') {
+    const points = new Map(order.map((name) => [name, []]));
+    entries.forEach(([name, yi, row]) => {
+      if (typeof row[xi] === 'number' && typeof row[yi] === 'number') {
+        points.get(seriesOf(name)).push({ x: row[xi], y: row[yi] });
+      }
+    });
+    shape.series = order.map((name) => ({ name, other: name === 'Other', points: points.get(name) }));
+    return { shape, notes };
+  }
+
+  const labels = [];
+  const seen = new Set();
+  result.rows.forEach((row) => {
+    const label = row[xi] === null ? 'NULL' : String(row[xi]);
+    if (!seen.has(label)) { seen.add(label); labels.push(label); }
+  });
+  // Dates read left to right whatever order the query returned them in.
+  if (config.xKind === 'date') labels.sort();
+  const index = new Map(labels.map((label, i) => [label, i]));
+
+  const values = new Map(order.map((name) => [name, labels.map(() => null)]));
+  let summed = false;
+  entries.forEach(([name, yi, row]) => {
+    if (typeof row[yi] !== 'number') return;
+    const line = values.get(seriesOf(name));
+    const at = index.get(row[xi] === null ? 'NULL' : String(row[xi]));
+    if (line[at] !== null) summed = true;
+    line[at] = (line[at] || 0) + row[yi];
+  });
+  if (summed) notes.push(`Several rows share a ${config.x} value; their values are added together.`);
+  if (config.type === 'bar' && config.series) shape.stacked = true;
+
+  shape.labels = labels;
+  shape.series = order.map((name) => ({ name, other: name === 'Other', values: values.get(name) }));
+  return { shape, notes };
+}
+
+function renderSqlChart(page, result, host) {
+  const kinds = sqlColumnKinds(result);
+  const config = sqlChartConfig(result, kinds);
+  const numeric = result.columns.filter((_, i) => kinds[i] === 'number');
+  const redraw = (changes) => {
+    replaceSqlHash(changes);
+    renderSqlResult(page, result);
+  };
+
+  const select = (label, value, options, onChange) => {
+    const box = el('select', { 'aria-label': label, onchange: () => onChange(box.value) });
+    options.forEach(([v, text, disabled]) => box.appendChild(el('option', {
+      value: v, text, selected: v === value, disabled: !!disabled,
+    })));
+    return el('label', { class: 'sql-ctl' }, [el('span', { text: label }), box]);
+  };
+
+  const controls = el('div', { class: 'sql-chart-controls' });
+  controls.appendChild(select('type', config.type, [
+    ['bar', 'bar'], ['line', 'line'],
+    ['scatter', config.xKind === 'number' ? 'scatter' : 'scatter (needs a numeric x)', config.xKind !== 'number'],
+  ], (v) => redraw({ ct: v })));
+  controls.appendChild(select('x', config.x, result.columns.map((c) => [c, c]),
+    (v) => redraw({ cx: v, ct: null, cy: null })));
+  controls.appendChild(select('series', config.series || '', [['', 'none']].concat(
+    result.columns.filter((c) => c !== config.x && !numeric.includes(c)).map((c) => [c, c])),
+  (v) => redraw({ cs: v || null, cy: null })));
+
+  const ys = el('div', { class: 'sql-ctl sql-ys' }, [el('span', { text: config.series ? 'y (one)' : 'y' })]);
+  numeric.filter((c) => c !== config.x).forEach((c) => {
+    const on = config.y.includes(c);
+    ys.appendChild(el('button', {
+      type: 'button', class: 'chip sql-y' + (on ? ' on' : ''), text: c,
+      'aria-pressed': on ? 'true' : 'false',
+      disabled: !on && !config.series && config.y.length >= SQL_SERIES_MAX ? true : null,
+      onclick: () => {
+        let next;
+        if (config.series) next = [c];
+        else next = on ? config.y.filter((n) => n !== c) : config.y.concat([c]);
+        redraw({ cy: next.length ? JSON.stringify(next) : null });
+      },
+    }));
+  });
+  controls.appendChild(ys);
+  host.appendChild(controls);
+
+  if (!numeric.length) {
+    host.appendChild(el('div', { class: 'empty', text: 'No numeric column to plot. Add a COUNT or SUM.' }));
+    return;
+  }
+
+  const { shape, notes } = sqlChartShape(result, config);
+  if (shape.series.length > 1) {
+    const legendBox = el('div', { class: 'legend sql-legend' });
+    const slots = ['--s1', '--s2', '--s3', '--s4'];
+    shape.series.forEach((s, i) => {
+      const swatch = el('i');
+      swatch.style.background = s.other ? 'var(--ink-muted)' : `var(${slots[i]})`;
+      legendBox.appendChild(el('span', { class: 'key' }, [swatch, s.name]));
+    });
+    host.appendChild(legendBox);
+  }
+  const chartHost = el('div');
+  host.appendChild(chartHost);
+  whenPlaced(chartHost, () => {
+    if (!chartHost.isConnected) return;
+    page.chart = sqlResultChart(chartHost, shape);
+  });
+  notes.forEach((text) => host.appendChild(el('div', { class: 'count-note', text })));
 }
 
 function sqlTable(result) {
