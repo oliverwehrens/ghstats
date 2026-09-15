@@ -69,16 +69,31 @@ class _Median:
     `median(lines)` reproduces the card's number instead of approximating it.
     NULLs are skipped and an empty set is NULL, as for every SQL aggregate --
     the card's zero-for-nothing is a display choice a recipe can `COALESCE`.
+
+    Text that reads as a number counts as one; any other text is refused
+    rather than quietly treated as zero, the way `avg` would. SQLite reports a
+    failing aggregate only as "finalize raised error", so `_explain` supplies
+    the sentence.
     """
 
     def __init__(self):
         self.values: List[float] = []
+        self.refused = False
 
     def step(self, value: Any) -> None:
-        if value is not None:
+        if value is None:
+            return
+        if isinstance(value, (int, float)):
             self.values.append(value)
+            return
+        try:
+            self.values.append(float(value))
+        except (TypeError, ValueError):
+            self.refused = True
 
     def finalize(self) -> Optional[float]:
+        if self.refused:
+            raise ValueError('median() of a non-numeric value')
         return queries._median(self.values) if self.values else None
 
 
@@ -170,6 +185,8 @@ def _explain(exc: sqlite3.Error, timeout: float) -> str:
     if message.startswith('You did not supply a value for binding parameter'):
         name = message.rsplit(' ', 1)[-1].rstrip('.')
         return f'unknown parameter {name}; available: {available}'
+    if "aggregate's 'finalize' method raised error" in message:
+        return 'median() needs numbers; one of its values is text'
     if 'has no name' in message:
         return f'use named parameters rather than ?: {available}'
     return message

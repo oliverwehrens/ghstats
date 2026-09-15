@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ghstats.explorer import queries, sql
+from ghstats.explorer import queries, schema_docs, sql
 from ghstats.store import sqlite as sqlite_store
 
 DEFAULT_HOST = '127.0.0.1'
@@ -199,6 +199,9 @@ def route_api(store: Store, path: str, params: Dict[str, List[str]]) -> Any:
 
     if head == 'meta' and name is None:
         return queries.meta(conn, org, store.tz_name)
+
+    if head == 'sql' and name == 'schema':
+        return schema_docs.describe(conn)
 
     if head == 'search' and name is None:
         return queries.search(conn, org, _first(params, 'q') or '',

@@ -16,7 +16,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from ghstats.explorer import queries as q
-from ghstats.explorer import server, sql
+from ghstats.explorer import schema_docs, server, sql
 from ghstats.store.sqlite import connect, repo_id
 
 ORG = 'acme'
@@ -150,6 +150,13 @@ class FunctionTest(SqlFixture):
         self.assertEqual(self.rows('SELECT median(number) FROM pulls WHERE 0'),
                          [[None]])
 
+    def test_median_reads_numeric_text_and_refuses_other_text(self):
+        self.assertEqual(self.rows("SELECT median(v) FROM (SELECT '4' AS v "
+                                   "UNION ALL SELECT 2)"), [[3.0]])
+        with self.assertRaises(sql.QueryError) as caught:
+            self.run_sql('SELECT median(author_login) FROM pulls')
+        self.assertIn('median() needs numbers', str(caught.exception))
+
     def test_median_agrees_with_the_cards(self):
         values = [10, 12, 14, 40000, 7, 7]
         union = ' UNION ALL '.join(f'SELECT {v} AS v' for v in values)
@@ -213,6 +220,59 @@ class GuardTest(SqlFixture):
 
     def test_a_blob_arrives_as_hex_not_as_a_python_repr(self):
         self.assertEqual(self.rows("SELECT x'cafe'"), [['cafe']])
+
+
+class SchemaDocsTest(SqlFixture):
+    """Every column says what it counts, and nothing describes a ghost."""
+
+    def setUp(self):
+        super().setUp()
+        self.conn = sql.open_connection(self.path, 'UTC')
+        self.addCleanup(self.conn.close)
+        self.schema = schema_docs.describe(self.conn)
+
+    def test_every_table_and_view_is_described(self):
+        for table in self.schema['tables']:
+            self.assertTrue(table['about'], table['name'])
+
+    def test_every_column_is_described(self):
+        missing = [f"{t['name']}.{c['name']}" for t in self.schema['tables']
+                   for c in t['columns'] if not c['about']]
+        self.assertEqual(missing, [])
+
+    def test_no_description_names_a_table_or_column_that_is_gone(self):
+        live = {t['name']: {c['name'] for c in t['columns']}
+                for t in self.schema['tables']}
+        for name, (_, columns) in schema_docs.TABLES.items():
+            self.assertIn(name, live, f'{name} is described but not in the store')
+            self.assertEqual(set(columns) - live[name], set(), name)
+
+    def test_views_are_marked_as_views(self):
+        kinds = {t['name']: t['kind'] for t in self.schema['tables']}
+        self.assertEqual(kinds['v_commit_ai'], 'view')
+        self.assertEqual(kinds['pulls'], 'table')
+
+    def test_columns_carry_type_and_key(self):
+        pulls = next(t for t in self.schema['tables'] if t['name'] == 'pulls')
+        number = next(c for c in pulls['columns'] if c['name'] == 'number')
+        self.assertEqual((number['type'], number['pk']), ('INTEGER', True))
+
+    def test_every_parameter_is_described(self):
+        self.assertEqual([p['name'] for p in self.schema['parameters']],
+                         list(sql.PARAMETERS))
+        self.assertTrue(all(p['about'] for p in self.schema['parameters']))
+
+    def test_every_documented_function_is_registered(self):
+        for function in self.schema['functions']:
+            argument = 1 if function['name'] == 'median' else "'2026-08-17T10:00:00Z'"
+            text = f"SELECT {function['name']}({argument})"
+            self.assertEqual(len(self.rows(text)), 1, function['name'])
+
+    def test_the_schema_is_served(self):
+        store = server.Store(self.path, ORG, 'UTC')
+        body = server.route_api(store, '/api/sql/schema', {})
+        self.assertIn('pull_metrics', [t['name'] for t in body['tables']])
+        self.assertTrue(body['functions'])
 
 
 class EndpointTest(SqlFixture):
