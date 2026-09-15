@@ -94,6 +94,10 @@ class ParameterTest(SqlFixture):
         self.assertEqual(self.rows('SELECT :repo IS NULL, :user IS NULL, '
                                    ':from IS NULL'), [[1, 1, 1]])
 
+    def test_org_is_the_served_organization(self):
+        out = sql.run(self.path, 'SELECT :org', q.Filters(), org=ORG)
+        self.assertEqual(out['rows'], [[ORG]])
+
     def test_repo_user_tz_and_bots(self):
         out = self.rows('SELECT :repo, :user, :tz, :bots',
                         repo='beta', user='ada', bots=True)

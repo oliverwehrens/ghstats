@@ -39,7 +39,7 @@ TIMEOUT_SECONDS = 5.0
 MAX_TEXT = 64 * 1024
 
 # Named parameters every query may use, in the order the page lists them.
-PARAMETERS = ('from', 'to', 'tz', 'repo', 'user', 'bots')
+PARAMETERS = ('org', 'from', 'to', 'tz', 'repo', 'user', 'bots')
 
 # Virtual-machine steps between progress-handler calls. Small enough that the
 # timeout is honoured to within milliseconds, large enough to cost nothing.
@@ -97,10 +97,10 @@ class _Median:
         return queries._median(self.values) if self.values else None
 
 
-def parameters(f: queries.Filters) -> Dict[str, Any]:
+def parameters(f: queries.Filters, org: Optional[str] = None) -> Dict[str, Any]:
     """The values `:from`, `:to` and friends bind to for these filters."""
     start, end = f.window()
-    return {'from': start, 'to': end, 'tz': f.tz, 'repo': f.repo,
+    return {'org': org, 'from': start, 'to': end, 'tz': f.tz, 'repo': f.repo,
             'user': f.user, 'bots': 1 if f.bots else 0}
 
 
@@ -129,7 +129,7 @@ def _cell(value: Any) -> Any:
     return value.hex() if isinstance(value, bytes) else value
 
 
-def run(path: str, text: str, f: queries.Filters, *,
+def run(path: str, text: str, f: queries.Filters, *, org: Optional[str] = None,
         max_rows: int = MAX_ROWS, timeout: float = TIMEOUT_SECONDS
         ) -> Dict[str, Any]:
     """Run one read-only statement and return its columns and rows.
@@ -143,7 +143,7 @@ def run(path: str, text: str, f: queries.Filters, *,
     if len(text) > MAX_TEXT:
         raise QueryError(f'query is longer than {MAX_TEXT} characters')
 
-    bound = parameters(f)
+    bound = parameters(f, org)
     conn = open_connection(path, f.tz)
     started = time.monotonic()
     deadline = started + timeout

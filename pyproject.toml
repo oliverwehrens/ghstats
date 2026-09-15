@@ -54,7 +54,7 @@ where = ["src"]
 # The explorer serves its own HTML, CSS and JS from the installed package.
 # `static/*` does not recurse, so the vendored chart library needs its own line.
 [tool.setuptools.package-data]
-"ghstats.explorer" = ["static/*", "static/vendor/*"]
+"ghstats.explorer" = ["static/*", "static/vendor/*", "recipes/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

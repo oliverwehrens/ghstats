@@ -9,6 +9,11 @@
  * Typing does not write the hash -- Run does -- because every hash change
  * re-renders, and re-rendering on each keystroke would run half-typed SQL.
  *
+ * **A recipe is a query with a name.** `recipe=<id>` loads a hand-written query
+ * that reproduces a card (see `recipes.py`); the cards link here with it. Once
+ * edited, the text travels as `sql=` beside the recipe id, so the page can say
+ * what it was edited from and offer the way back.
+ *
  * **The editor survives re-renders.** A filter change re-runs the query, and
  * rebuilding CodeMirror for that would drop the cursor and the undo history.
  * The mounted page is kept in `SQL_PAGE` and reused while it is still on
@@ -42,7 +47,7 @@ const SQL_LINKS = {
 // Parameters the strip shows, and the two it lets you set: repository and
 // person have no control in the filter bar, because everywhere else they are
 // the page you are on.
-const SQL_PARAMS = ['from', 'to', 'tz', 'bots', 'repo', 'user'];
+const SQL_PARAMS = ['org', 'from', 'to', 'tz', 'bots', 'repo', 'user'];
 const SQL_EDITABLE = ['repo', 'user'];
 
 let SQL_PAGE = null;
@@ -51,6 +56,19 @@ let SQL_PAGE = null;
 // fetch it once per page load. Outside `api` on purpose, so a navigation that
 // supersedes a render does not discard it.
 let SQL_SCHEMA = null;
+
+let SQL_RECIPES = null;
+
+function sqlRecipes() {
+  if (!SQL_RECIPES) {
+    SQL_RECIPES = fetch('/api/sql/recipes').then((response) => {
+      if (!response.ok) throw new Error(response.statusText);
+      return response.json();
+    }).then((body) => body.recipes);
+    SQL_RECIPES.catch(() => { SQL_RECIPES = null; });
+  }
+  return SQL_RECIPES;
+}
 
 function sqlSchema() {
   if (!SQL_SCHEMA) {
@@ -64,13 +82,26 @@ function sqlSchema() {
 }
 
 async function viewSql() {
+  const mine = GENERATION;
   const { params } = parseHash();
-  const text = params.get('sql');
+  const recipeId = params.get('recipe');
+  let recipe = null;
+  let missing = null;
+  if (recipeId) {
+    const all = await sqlRecipes();
+    if (mine !== GENERATION) throw STALE;
+    recipe = all.find((r) => r.id === recipeId) || null;
+    if (!recipe) missing = recipeId;
+  }
+  const edited = params.get('sql');
+  const text = edited !== null ? edited : (recipe ? recipe.sql : null);
 
   if (!SQL_PAGE || !main.contains(SQL_PAGE.root)) SQL_PAGE = buildSqlPage(text);
   const page = SQL_PAGE;
+  page.recipe = recipe;
   if (text !== null && page.editor.getValue() !== text) page.editor.setValue(text);
   syncSqlInputs(page);
+  renderSqlRecipe(page, recipe, edited !== null && recipe !== null && edited !== recipe.sql, missing);
 
   if (text === null) {
     renderSqlParams(page, null);
@@ -103,7 +134,10 @@ function buildSqlPage(text) {
   const strip = el('div', { class: 'sql-params' });
   const results = el('div', { class: 'sql-results' });
 
-  const side = el('aside', { class: 'sql-side' }, [el('div', { class: 'empty', text: 'Loading schema…' })]);
+  const recipesHost = el('div', { class: 'sql-recipes' });
+  const schemaHost = el('div', null, [el('div', { class: 'empty', text: 'Loading schema…' })]);
+  const side = el('aside', { class: 'sql-side' }, [recipesHost, schemaHost]);
+  const recipeBox = el('div', { class: 'sql-recipe', hidden: true });
 
   const editorCard = el('div', { class: 'card' }, [
     editorHost,
@@ -111,10 +145,13 @@ function buildSqlPage(text) {
     strip,
   ]);
   root.appendChild(side);
-  root.appendChild(el('div', { class: 'sql-work' }, [editorCard, results]));
+  root.appendChild(el('div', { class: 'sql-work' }, [recipeBox, editorCard, results]));
   show([crumb('SQL', 'read-only'), root]);
 
-  const page = { root, side, status, strip, results, inputs: {}, editor: null };
+  const page = {
+    root, side, recipesHost, schemaHost, recipeBox, status, strip, results,
+    inputs: {}, editor: null, recipe: null, recipes: [],
+  };
   const execute = () => runSql(page);
   page.editor = CodeMirror(editorHost, {
     value: text === null ? SQL_STARTER : text,
@@ -141,6 +178,12 @@ function buildSqlPage(text) {
     editor.showHint();
   });
 
+  sqlRecipes().then((all) => {
+    if (SQL_PAGE !== page) return;
+    page.recipes = all;
+    renderSqlRecipeList(page);
+  }, () => {});
+
   sqlSchema().then((schema) => {
     if (SQL_PAGE !== page) return;
     const tables = {};
@@ -149,8 +192,8 @@ function buildSqlPage(text) {
     page.editor.setOption('hintOptions', { completeSingle: false, hint: sqlHint, tables });
     renderSqlSide(page, schema);
   }, (err) => {
-    clear(side);
-    side.appendChild(el('div', { class: 'warn', text: 'Schema unavailable: ' + (err.message || err) }));
+    clear(schemaHost);
+    schemaHost.appendChild(el('div', { class: 'warn', text: 'Schema unavailable: ' + (err.message || err) }));
   });
 
   SQL_EDITABLE.forEach((name) => {
@@ -209,7 +252,7 @@ function sqlInsert(page, text) {
  * name, or a first look at its rows.
  */
 function renderSqlSide(page, schema) {
-  const side = page.side;
+  const side = page.schemaHost;
   clear(side);
 
   const find = el('input', {
@@ -229,7 +272,10 @@ function renderSqlSide(page, schema) {
       el('button', { type: 'button', text: 'insert name', onclick: () => sqlInsert(page, table.name) }),
       el('button', {
         type: 'button', text: 'preview rows',
-        onclick: () => { page.editor.setValue(`SELECT *\nFROM ${table.name}\nLIMIT 100`); runSql(page); },
+        onclick: () => {
+          page.editor.setValue(`SELECT *\nFROM ${table.name}\nLIMIT 100`);
+          runSql(page, { recipe: null });
+        },
       }),
     ]));
     const list = el('ul', { class: 'cols' });
@@ -287,11 +333,78 @@ function renderSqlSide(page, schema) {
   });
 }
 
+/**
+ * The recipes, by the card they explain. Picking one replaces the editor's
+ * text; the query it replaced is a Back away.
+ */
+function renderSqlRecipeList(page) {
+  const host = page.recipesHost;
+  clear(host);
+  if (!page.recipes.length) return;
+  host.appendChild(el('div', { class: 'sql-head', text: 'Recipes' }));
+  page.recipes.forEach((recipe) => {
+    host.appendChild(el('button', {
+      type: 'button',
+      class: 'sql-recipe-item' + (page.recipe && page.recipe.id === recipe.id ? ' on' : ''),
+      text: recipe.title,
+      title: recipe.about,
+      onclick: () => go(['sql'], { recipe: recipe.id, sql: null }),
+    }));
+  });
+}
+
+// What each filter the SQL page cannot bind is called on screen.
+const SQL_UNBOUND = {
+  team: 'team', project: 'Jira project', issue: 'issue', kinds: 'event kinds',
+  q: 'text search', ai: 'AI',
+};
+
+/** The recipe being shown: its name, what it cannot reproduce, and whether
+ *  the editor still holds it as written. */
+function renderSqlRecipe(page, recipe, edited, missing) {
+  const box = page.recipeBox;
+  clear(box);
+  renderSqlRecipeList(page);
+  box.hidden = !recipe && !missing;
+  if (missing) {
+    box.appendChild(el('div', { class: 'warn', text: `No recipe called “${missing}”.` }));
+    return;
+  }
+  if (!recipe) return;
+
+  const head = el('div', { class: 'sql-recipe-head' }, [
+    el('span', { class: 'kind-of', text: 'recipe' }),
+    el('strong', { text: recipe.title }),
+  ]);
+  if (edited) {
+    head.appendChild(el('span', { class: 'chip', text: 'edited' }));
+    head.appendChild(el('button', {
+      type: 'button', class: 'more', text: 'Back to the recipe',
+      onclick: () => go(['sql'], { sql: null }),
+    }));
+  }
+  box.appendChild(head);
+
+  const f = currentFilters();
+  const active = recipe.ignores.filter((name) => f[name]).map((name) => SQL_UNBOUND[name] || name);
+  if (active.length) {
+    box.appendChild(el('div', {
+      class: 'warn',
+      text: `The card applies the ${active.join(', ')} filter${active.length > 1 ? 's' : ''}, `
+          + 'and this recipe does not, so their numbers can differ.',
+    }));
+  }
+}
+
 /** Write the editor's text into the hash, or re-run if it is already there. */
-function runSql(page) {
+function runSql(page, changes) {
   const text = page.editor.getValue();
   const before = location.hash;
-  go(['sql'], { sql: text.trim() ? text : null });
+  const recipe = changes && 'recipe' in changes ? null : page.recipe;
+  // The recipe as written travels as its id alone, so the URL stays short and
+  // a later fix to the recipe reaches the bookmark.
+  const sql = recipe && text === recipe.sql ? null : (text.trim() ? text : null);
+  go(['sql'], Object.assign({ sql }, changes));
   // An unchanged hash fires no hashchange, and Run on the same text should
   // still run -- the store may have been synced since.
   if (location.hash === before) render();

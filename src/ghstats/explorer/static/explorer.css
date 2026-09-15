@@ -516,3 +516,36 @@ li.CodeMirror-hint-active { background: var(--s1); color: #fff; }
 .sql-tbl .cols .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .sql-tbl .cols .type { color: var(--ink-muted); font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
 .sql-tbl .ref { padding: 3px 0 5px 16px; }
+
+/* Links from a card to the recipe that reproduces it. */
+.card > h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.sql-link {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .05em; color: var(--ink-muted);
+  border: 1px solid var(--border); border-radius: 20px; padding: 0 7px; text-transform: none;
+}
+.sql-link:hover { color: var(--s1); border-color: var(--s1); text-decoration: none; }
+.tiles-wrap { margin-bottom: 8px; }
+.tiles-wrap .tiles { margin-bottom: 0; }
+.sql-note { display: flex; justify-content: flex-end; margin-top: 5px; }
+
+.sql-head {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-muted); padding: 2px 2px 5px;
+}
+.sql-recipes { margin-bottom: 10px; }
+.sql-recipe-item {
+  display: block; width: 100%; text-align: left; padding: 5px 8px; margin-bottom: 2px;
+  border: 0; border-radius: 6px; background: none; color: var(--ink-2);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.sql-recipe-item:hover { background: var(--plane); color: var(--ink); }
+.sql-recipe-item.on {
+  background: color-mix(in oklab, var(--s1) 14%, transparent); color: var(--s1); font-weight: 600;
+}
+.sql-recipe { margin-bottom: 10px; }
+.sql-recipe-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 8px; }
+.sql-recipe-head .kind-of {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-muted); border: 1px solid var(--border); padding: 2px 7px; border-radius: 20px;
+}
+.sql-recipe-head .more { margin-top: 0; padding: 3px 10px; font-size: 12px; }

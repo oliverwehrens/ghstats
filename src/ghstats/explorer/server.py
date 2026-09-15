@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ghstats.explorer import queries, schema_docs, sql
+from ghstats.explorer import queries, recipes, schema_docs, sql
 from ghstats.store import sqlite as sqlite_store
 
 DEFAULT_HOST = '127.0.0.1'
@@ -203,6 +203,9 @@ def route_api(store: Store, path: str, params: Dict[str, List[str]]) -> Any:
     if head == 'sql' and name == 'schema':
         return schema_docs.describe(conn)
 
+    if head == 'sql' and name == 'recipes':
+        return {'recipes': recipes.load()}
+
     if head == 'search' and name is None:
         return queries.search(conn, org, _first(params, 'q') or '',
                               limit=_int(params, 'limit', 8))
@@ -263,7 +266,7 @@ def route_api_post(store: Store, path: str, params: Dict[str, List[str]],
         raise BadRequest('expected a JSON object with a "sql" string')
     try:
         return sql.run(store.path, body['sql'],
-                       filters_from(params, store.tz_name))
+                       filters_from(params, store.tz_name), org=store.org)
     except sql.QueryError as exc:
         raise BadRequest(str(exc))
 

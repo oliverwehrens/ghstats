@@ -255,6 +255,8 @@ FUNCTIONS: List[Dict[str, str]] = [
 ]
 
 PARAMETERS: Dict[str, str] = {
+    'org': 'The organization the explorer is serving. Every card filters '
+           '`repos.org` on it.',
     'from': 'Start of the date filter as a UTC instant, inclusive; NULL for '
             'no start. Compare with >=.',
     'to': 'End of the date filter as a UTC instant, exclusive; NULL for no '
