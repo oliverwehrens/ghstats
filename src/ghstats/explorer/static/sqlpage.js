@@ -14,6 +14,11 @@
  * edited, the text travels as `sql=` beside the recipe id, so the page can say
  * what it was edited from and offer the way back.
  *
+ * **Saved queries and history stay in this browser.** `localStorage`, per
+ * origin -- so http://localhost and http://127.0.0.1 keep separate lists. Every
+ * access is guarded: storage can be disabled, full, or throw in a private
+ * window, and the page must work without it.
+ *
  * **The editor survives re-renders.** A filter change re-runs the query, and
  * rebuilding CodeMirror for that would drop the cursor and the undo history.
  * The mounted page is kept in `SQL_PAGE` and reused while it is still on
@@ -51,6 +56,81 @@ const SQL_PARAMS = ['org', 'from', 'to', 'tz', 'bots', 'repo', 'user'];
 const SQL_EDITABLE = ['repo', 'user'];
 
 let SQL_PAGE = null;
+
+const SQL_SAVED_KEY = 'ghstats.sql.saved';
+const SQL_HISTORY_KEY = 'ghstats.sql.history';
+const SQL_HISTORY_MAX = 50;
+
+function sqlStored(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(value) ? value.filter((e) => e && typeof e.sql === 'string') : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function sqlStore(key, list) {
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/** Put a query at the top of the history, once. */
+function rememberSql(text) {
+  if (!text.trim()) return;
+  const list = sqlStored(SQL_HISTORY_KEY).filter((entry) => entry.sql !== text);
+  list.unshift({ sql: text, at: new Date().toISOString() });
+  sqlStore(SQL_HISTORY_KEY, list.slice(0, SQL_HISTORY_MAX));
+}
+
+/** A name to offer when saving: the recipe it came from, else its first comment
+ *  or first line. */
+function sqlSuggestName(text, recipe) {
+  if (recipe) return recipe.title + ' (edited)';
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const comment = lines.find((line) => line.startsWith('--') && line.replace(/^-+\s*/, ''));
+  const first = comment ? comment.replace(/^-+\s*/, '') : (lines[0] || 'query');
+  return first.length > 60 ? first.slice(0, 57) + '…' : first;
+}
+
+function saveSql(page) {
+  const text = page.editor.getValue();
+  if (!text.trim()) return;
+  const saved = sqlStored(SQL_SAVED_KEY);
+  const current = saved.find((entry) => entry.sql === text);
+  const name = (window.prompt('Save this query as', current ? current.name : sqlSuggestName(text, page.recipe)) || '').trim();
+  if (!name) return;
+  const clash = saved.find((entry) => entry.name === name);
+  if (clash && clash.sql !== text && !window.confirm(`Replace the saved query “${name}”?`)) return;
+  const next = [{ name, sql: text, at: new Date().toISOString() }]
+    .concat(saved.filter((entry) => entry.name !== name));
+  if (!sqlStore(SQL_SAVED_KEY, next)) {
+    page.status.textContent = 'Could not save: this browser is not allowing local storage.';
+    return;
+  }
+  page.status.textContent = `Saved as “${name}”.`;
+  renderSqlLibrary(page);
+}
+
+function sqlAgo(iso) {
+  const seconds = (Date.now() - Date.parse(iso)) / 1000;
+  if (!(seconds >= 0)) return '';
+  if (seconds < 90) return 'just now';
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86400)} d ago`;
+}
+
+/** First line worth showing for a query in a list: skip blank and header lines. */
+function sqlGist(text) {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const code = lines.find((line) => !line.startsWith('--'));
+  return (code || lines[0] || '').slice(0, 80);
+}
 
 // The schema changes only when the store is migrated, which means a restart:
 // fetch it once per page load. Outside `api` on purpose, so a navigation that
@@ -94,6 +174,8 @@ async function viewSql() {
     if (!recipe) missing = recipeId;
   }
   const edited = params.get('sql');
+  // Recorded before running, so a query that fails is not lost either.
+  if (edited !== null) rememberSql(edited);
   const text = edited !== null ? edited : (recipe ? recipe.sql : null);
 
   if (!SQL_PAGE || !main.contains(SQL_PAGE.root)) SQL_PAGE = buildSqlPage(text);
@@ -102,6 +184,7 @@ async function viewSql() {
   if (text !== null && page.editor.getValue() !== text) page.editor.setValue(text);
   syncSqlInputs(page);
   renderSqlRecipe(page, recipe, edited !== null && recipe !== null && edited !== recipe.sql, missing);
+  renderSqlLibrary(page);
 
   if (text === null) {
     renderSqlParams(page, null);
@@ -131,17 +214,19 @@ function buildSqlPage(text) {
   const editorHost = el('div', { class: 'sql-editor' });
   const status = el('span', { class: 'sql-status' });
   const run = el('button', { class: 'sql-run', text: 'Run', title: 'Ctrl+Enter' });
+  const save = el('button', { class: 'more sql-save', text: 'Save', title: 'Ctrl+S — kept in this browser' });
   const strip = el('div', { class: 'sql-params' });
   const results = el('div', { class: 'sql-results' });
 
   const recipesHost = el('div', { class: 'sql-recipes' });
   const schemaHost = el('div', null, [el('div', { class: 'empty', text: 'Loading schema…' })]);
-  const side = el('aside', { class: 'sql-side' }, [recipesHost, schemaHost]);
+  const libraryHost = el('div', { class: 'sql-library' });
+  const side = el('aside', { class: 'sql-side' }, [recipesHost, libraryHost, schemaHost]);
   const recipeBox = el('div', { class: 'sql-recipe', hidden: true });
 
   const editorCard = el('div', { class: 'card' }, [
     editorHost,
-    el('div', { class: 'sql-bar' }, [run, status]),
+    el('div', { class: 'sql-bar' }, [run, save, status]),
     strip,
   ]);
   root.appendChild(side);
@@ -149,12 +234,13 @@ function buildSqlPage(text) {
   show([crumb('SQL', 'read-only'), root]);
 
   const page = {
-    root, side, recipesHost, schemaHost, recipeBox, status, strip, results,
+    root, side, recipesHost, libraryHost, schemaHost, recipeBox, status, strip, results,
     inputs: {}, editor: null, recipe: null, recipes: [],
   };
   const execute = () => runSql(page);
   page.editor = CodeMirror(editorHost, {
-    value: text === null ? SQL_STARTER : text,
+    // With nothing in the URL, pick up where the last query left off.
+    value: text !== null ? text : ((sqlStored(SQL_HISTORY_KEY)[0] || {}).sql || SQL_STARTER),
     mode: 'text/x-sqlite',
     lineNumbers: true,
     matchBrackets: true,
@@ -164,11 +250,14 @@ function buildSqlPage(text) {
     extraKeys: {
       'Ctrl-Enter': execute,
       'Cmd-Enter': execute,
+      'Ctrl-S': () => saveSql(page),
+      'Cmd-S': () => saveSql(page),
       'Ctrl-Space': 'autocomplete',
     },
     hintOptions: { completeSingle: false, hint: sqlHint },
   });
   run.addEventListener('click', execute);
+  save.addEventListener('click', () => saveSql(page));
   // Complete as you type an identifier, not only on Ctrl+Space.
   page.editor.on('inputRead', (editor, change) => {
     if (editor.state.completionActive || change.origin !== '+input') return;
@@ -351,6 +440,60 @@ function renderSqlRecipeList(page) {
       onclick: () => go(['sql'], { recipe: recipe.id, sql: null }),
     }));
   });
+}
+
+/**
+ * Saved queries, then the history. Opening either runs it, as a link would;
+ * a recipe id is dropped, since the text is no longer the recipe's.
+ */
+function renderSqlLibrary(page) {
+  const host = page.libraryHost;
+  clear(host);
+  const open = (text) => go(['sql'], { sql: text, recipe: null });
+  const current = page.editor ? page.editor.getValue() : null;
+
+  const saved = sqlStored(SQL_SAVED_KEY);
+  if (saved.length) {
+    host.appendChild(el('div', { class: 'sql-head', text: 'Saved' }));
+    saved.forEach((entry) => {
+      host.appendChild(el('div', { class: 'sql-lib-row' }, [
+        el('button', {
+          type: 'button', class: 'sql-recipe-item' + (entry.sql === current ? ' on' : ''),
+          text: entry.name, title: entry.sql.slice(0, 400), onclick: () => open(entry.sql),
+        }),
+        el('button', {
+          type: 'button', class: 'sql-lib-x', text: '×', title: `Delete “${entry.name}”`,
+          'aria-label': `Delete ${entry.name}`,
+          onclick: () => {
+            if (!window.confirm(`Delete the saved query “${entry.name}”?`)) return;
+            sqlStore(SQL_SAVED_KEY, sqlStored(SQL_SAVED_KEY).filter((e) => e.name !== entry.name));
+            renderSqlLibrary(page);
+          },
+        }),
+      ]));
+    });
+  }
+
+  const history = sqlStored(SQL_HISTORY_KEY);
+  if (history.length) {
+    const details = el('details', { class: 'sql-history' });
+    details.appendChild(el('summary', { class: 'sql-head', text: `History (${history.length})` }));
+    history.forEach((entry) => {
+      details.appendChild(el('button', {
+        type: 'button', class: 'sql-recipe-item sql-hist-item', title: entry.sql.slice(0, 400),
+        onclick: () => open(entry.sql),
+      }, [el('code', { text: sqlGist(entry.sql) }), el('span', { class: 'ago', text: sqlAgo(entry.at) })]));
+    });
+    details.appendChild(el('button', {
+      type: 'button', class: 'sql-lib-clear', text: 'Clear history',
+      onclick: () => {
+        if (!window.confirm('Clear the query history in this browser?')) return;
+        sqlStore(SQL_HISTORY_KEY, []);
+        renderSqlLibrary(page);
+      },
+    }));
+    host.appendChild(details);
+  }
 }
 
 // What each filter the SQL page cannot bind is called on screen.

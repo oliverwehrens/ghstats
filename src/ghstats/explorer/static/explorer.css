@@ -549,3 +549,28 @@ li.CodeMirror-hint-active { background: var(--s1); color: #fff; }
   color: var(--ink-muted); border: 1px solid var(--border); padding: 2px 7px; border-radius: 20px;
 }
 .sql-recipe-head .more { margin-top: 0; padding: 3px 10px; font-size: 12px; }
+
+.sql-save { margin-top: 0; padding: 4px 12px; font-size: 12.5px; }
+.sql-library { margin-bottom: 10px; }
+.sql-lib-row { display: flex; align-items: center; gap: 2px; }
+.sql-lib-row .sql-recipe-item { flex: 1; min-width: 0; margin-bottom: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-lib-x {
+  flex: none; width: 22px; height: 22px; border: 0; border-radius: 5px; background: none;
+  color: var(--ink-muted); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.sql-lib-x:hover { background: var(--plane); color: #e34948; }
+.sql-history summary { cursor: pointer; list-style: none; }
+.sql-history summary::-webkit-details-marker { display: none; }
+.sql-history summary::before { content: '▸ '; }
+.sql-history[open] summary::before { content: '▾ '; }
+.sql-hist-item { display: flex; justify-content: space-between; gap: 8px; }
+.sql-hist-item code {
+  font-family: var(--mono); font-size: 11.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sql-hist-item .ago { flex: none; color: var(--ink-muted); font-size: 11px; }
+.sql-lib-clear {
+  border: 0; background: none; padding: 4px 8px; font: inherit; font-size: 11.5px;
+  color: var(--ink-muted); cursor: pointer;
+}
+.sql-lib-clear:hover { color: #e34948; }
