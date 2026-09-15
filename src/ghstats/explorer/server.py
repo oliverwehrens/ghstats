@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ghstats.explorer import queries
+from ghstats.explorer import queries, sql
 from ghstats.store import sqlite as sqlite_store
 
 DEFAULT_HOST = '127.0.0.1'
@@ -246,6 +246,25 @@ def route_api(store: Store, path: str, params: Dict[str, List[str]]) -> Any:
     raise NotFound(path)
 
 
+def route_api_post(store: Store, path: str, params: Dict[str, List[str]],
+                   body: Any) -> Any:
+    """Dispatch a POST. The SQL page is the only thing that sends one.
+
+    POST rather than GET because a query does not fit comfortably in a URL and
+    should not land in a log line. The filters still travel in the query
+    string, parsed exactly as the cards' are.
+    """
+    if path.rstrip('/') != '/api/sql':
+        raise NotFound(path)
+    if not isinstance(body, dict) or not isinstance(body.get('sql'), str):
+        raise BadRequest('expected a JSON object with a "sql" string')
+    try:
+        return sql.run(store.path, body['sql'],
+                       filters_from(params, store.tz_name))
+    except sql.QueryError as exc:
+        raise BadRequest(str(exc))
+
+
 class Handler(BaseHTTPRequestHandler):
     """One request. `store` and `allow_hosts` are set on the class by `serve`."""
 
@@ -320,6 +339,56 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {'error': f'store error: {exc}'})
         except BrokenPipeError:
             pass                          # the browser navigated away mid-render
+        except Exception as exc:          # noqa: BLE001 - a handler must not die
+            self._json(500, {'error': f'{type(exc).__name__}: {exc}'})
+
+    def do_POST(self) -> None:
+        """Run a query from the SQL page.
+
+        **Only `application/json`.** A page on any other site can make the
+        browser POST `text/plain` or a form to 127.0.0.1 without asking first,
+        and the Host check cannot tell -- the Host really is 127.0.0.1. A JSON
+        body needs a CORS preflight, and nothing here answers one, so the
+        browser never sends it. The runner is read-only regardless; this keeps
+        a stranger's page from spending this machine's CPU on the store.
+        """
+        # Error paths below do not read the body, so the connection cannot be
+        # reused for another request.
+        self.close_connection = True
+        if not self._host_ok():
+            self._json(400, {'error': 'unexpected Host header'})
+            return
+        content_type = (self.headers.get('Content-Type') or '').split(';')[0]
+        if content_type.strip().lower() != 'application/json':
+            self._json(415, {'error': 'expected Content-Type: application/json'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            length = -1
+        if length < 0:
+            self._json(400, {'error': 'bad Content-Length'})
+            return
+        if length > sql.MAX_TEXT:
+            self._json(413, {'error': f'body is larger than {sql.MAX_TEXT} bytes'})
+            return
+
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        try:
+            try:
+                body = json.loads(self.rfile.read(length) or b'null')
+            except ValueError:
+                raise BadRequest('body is not valid JSON')
+            self._json(200, route_api_post(self.store, parsed.path, params, body))
+        except NotFound as exc:
+            self._json(404, {'error': str(exc)})
+        except BadRequest as exc:
+            self._json(400, {'error': str(exc)})
+        except sqlite3.Error as exc:
+            self._json(500, {'error': f'store error: {exc}'})
+        except BrokenPipeError:
+            pass
         except Exception as exc:          # noqa: BLE001 - a handler must not die
             self._json(500, {'error': f'{type(exc).__name__}: {exc}'})
 
