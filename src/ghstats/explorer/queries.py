@@ -988,6 +988,7 @@ def repo_detail(conn: sqlite3.Connection, org: str, name: str, f: Filters
             ORDER BY t.name""", (name,))],
     }
     bundle['by_actor'] = _grouped(conn, org, f, 'actor')
+    bundle['pulls'] = pull_discussion(conn, org, f)
     return bundle
 
 
@@ -1144,3 +1145,202 @@ def _by_team(conn: sqlite3.Connection, org: str, f: Filters
         LEFT JOIN team_members m ON m.login = e.actor AND m.active = 1
         GROUP BY team ORDER BY total DESC""", params).fetchall()
     return [dict(r) for r in rows]
+
+
+# -- pull request size and discussion --------------------------------------
+
+# Above this many pull requests the scatter stops being a plot and starts being
+# a smear, and the payload stops being small. The newest are kept, because the
+# question the chart answers is about the trend ending today.
+SCATTER_CAP = 2000
+
+# Where the trend buckets switch from weeks to months. A quarter drawn in
+# months is four points, which is not a trend; two years drawn in weeks is a
+# hundred, which is not readable.
+WEEKLY_DAYS = 120
+
+
+def _median(values: Sequence[float]) -> float:
+    """Middle value, or the mean of the middle pair. Zero for nothing.
+
+    Medians rather than means throughout this section. Pull request size is
+    heavily skewed -- one lockfile refresh or generated-client bump is tens of
+    thousands of lines and drags a monthly mean past every real change in the
+    month. The means are returned alongside, because the gap between the two is
+    itself the signal that a month had one of those.
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _bucket_of(day: str, weekly: bool) -> str:
+    """The trend bucket a local date falls in.
+
+    Weeks are labelled by their Monday, so a bucket is a date the rest of the
+    UI can already parse, rather than an ISO week number nobody can place in a
+    year without counting.
+    """
+    if not weekly:
+        return day[:7]
+    stamp = date.fromisoformat(day)
+    return (stamp - timedelta(days=stamp.weekday())).isoformat()
+
+
+def _weekly(f: Filters, days: Sequence[str]) -> bool:
+    """Whether the trend should bucket by week rather than by month."""
+    if not days:
+        return False
+    first = f.frm or min(days)
+    last = f.to or max(days)
+    try:
+        span = (date.fromisoformat(last) - date.fromisoformat(first)).days
+    except ValueError:
+        return False
+    return span <= WEEKLY_DAYS
+
+
+def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
+                    ) -> Dict[str, Any]:
+    """How big pull requests are, how much they are discussed, and the trend.
+
+    Answers one question -- does review attention keep up with the size of what
+    is being shipped -- in the two forms it is actually asked: the shape over
+    time, and the individual outliers.
+
+    **A pull request with no `pull_metrics` row is excluded, not counted as
+    zero.** Everything synced before schema 5 has no measurement until
+    `ghstats-backfill-pulls` has run, and coalescing that to zero would draw
+    twenty months of unmeasured history as a flat line of undiscussed,
+    zero-line pull requests -- indistinguishable from a real quiet period, and
+    wrong in the direction that looks like a finding. `measured` and `total`
+    are returned so the UI can say which it is.
+
+    **Discussion is comments + inline review comments + reviews with a body.**
+    An approve click is a review with an empty body and no comments; counting
+    it would make every rubber-stamped pull request look debated. The three
+    parts are returned separately as well as summed.
+
+    **Trap: the bots filter cannot reach comment counts.** `author_login`
+    filters which pull requests and which *reviews* are counted, but
+    `comments` and `review_comments` are totals GitHub reports per pull
+    request, with no author breakdown -- getting one would mean fetching every
+    comment node instead of a count. So with bots excluded, a Renovate PR
+    drops out entirely, while a human PR that Copilot left twelve inline
+    comments on still carries them. That inflates discussion on repositories
+    with review automation, and the UI says so rather than leaving it to be
+    found.
+
+    Returns:
+        `buckets` (the trend, oldest first), `points` (per pull request, for
+        the scatter), `totals`, and the measured/total coverage counts.
+    """
+    f = _with(f, kinds=('pull',))
+    where, params = _where('pull', f, org)
+    src = _SOURCES['pull']
+
+    # Bot reviews are excluded from the review-body count on the same terms as
+    # everything else, so the one part of discussion that *can* respect the
+    # filter does.
+    review_bots = _bot_clause('v.author_login', f.bots)
+
+    rows = conn.execute(f"""
+        SELECT r.name AS repo, p.number AS number, p.title AS title,
+               p.author_login AS author, p.created_at AS at,
+               local_date(p.created_at) AS day,
+               p.merged_at IS NOT NULL AS merged,
+               m.additions AS added, m.deletions AS removed,
+               m.changed_files AS files,
+               m.comments AS conversation, m.review_comments AS inline,
+               (SELECT COUNT(*) FROM reviews v
+                 WHERE v.repo_id = p.repo_id AND v.pull_number = p.number
+                   AND TRIM(v.body) <> ''{review_bots}) AS review_bodies
+        FROM {src['table']}
+        JOIN pull_metrics m
+          ON m.repo_id = p.repo_id AND m.number = p.number
+        WHERE {where}
+        ORDER BY p.created_at""", params).fetchall()
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM {src['table']} WHERE {where}", params
+    ).fetchone()[0]
+
+    points: List[Dict[str, Any]] = []
+    for row in rows:
+        discussion = row['conversation'] + row['inline'] + row['review_bodies']
+        points.append({
+            'repo': row['repo'], 'number': row['number'],
+            'title': row['title'], 'author': row['author'],
+            'day': row['day'], 'merged': bool(row['merged']),
+            'added': row['added'], 'removed': row['removed'],
+            'lines': row['added'] + row['removed'],
+            'files': row['files'],
+            'conversation': row['conversation'], 'inline': row['inline'],
+            'reviews': row['review_bodies'], 'discussion': discussion,
+        })
+
+    weekly = _weekly(f, [p['day'] for p in points])
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for point in points:
+        grouped.setdefault(_bucket_of(point['day'], weekly), []).append(point)
+
+    buckets = []
+    for key in sorted(grouped):
+        members = grouped[key]
+        lines = [p['lines'] for p in members]
+        discussion = [p['discussion'] for p in members]
+        lines_total = sum(lines)
+        buckets.append({
+            'bucket': key,
+            'pulls': len(members),
+            'merged': sum(1 for p in members if p['merged']),
+            'lines_median': _median(lines),
+            'lines_mean': sum(lines) / len(members),
+            'lines_total': lines_total,
+            'files_median': _median([p['files'] for p in members]),
+            'discussion_median': _median(discussion),
+            'discussion_mean': sum(discussion) / len(members),
+            'discussion_total': sum(discussion),
+            'conversation': sum(p['conversation'] for p in members),
+            'inline': sum(p['inline'] for p in members),
+            'reviews': sum(p['reviews'] for p in members),
+            # Comments per 100 lines changed, over the bucket as a whole rather
+            # than as a mean of per-PR ratios: a one-line PR with two comments
+            # would otherwise contribute a ratio of 200 and outweigh every
+            # ordinary change in the month.
+            'per_100_lines': (sum(discussion) * 100.0 / lines_total
+                              if lines_total else None),
+            'undiscussed': sum(1 for p in members if not p['discussion']),
+        })
+
+    all_lines = [p['lines'] for p in points]
+    all_discussion = [p['discussion'] for p in points]
+    lines_total = sum(all_lines)
+    return {
+        'granularity': 'week' if weekly else 'month',
+        'measured': len(points),
+        'total': total,
+        'unmeasured': max(0, total - len(points)),
+        'truncated': max(0, len(points) - SCATTER_CAP),
+        'buckets': buckets,
+        # Newest first is what gets kept when there are more than the cap; the
+        # list is re-sorted oldest-first so the client never has to care.
+        'points': sorted(points[-SCATTER_CAP:], key=lambda p: p['day']),
+        'totals': {
+            'pulls': len(points),
+            'lines_median': _median(all_lines),
+            'lines_total': lines_total,
+            'discussion_median': _median(all_discussion),
+            'discussion_total': sum(all_discussion),
+            'conversation': sum(p['conversation'] for p in points),
+            'inline': sum(p['inline'] for p in points),
+            'reviews': sum(p['reviews'] for p in points),
+            'per_100_lines': (sum(all_discussion) * 100.0 / lines_total
+                              if lines_total else None),
+            'undiscussed': sum(1 for p in points if not p['discussion']),
+        },
+    }

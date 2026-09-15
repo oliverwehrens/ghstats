@@ -257,7 +257,9 @@ stay in step, and `static/vendor/README.md` says where to change both.
 Three graphs, and the same three everywhere they make sense — the People entry
 point draws them over everyone, a person's page draws them over one person. A
 personal rhythm only means something against the one it sits inside, and a
-shape you have to remember from another page is not a comparison.
+shape you have to remember from another page is not a comparison. (A
+repository's page carries two more, which only it can answer — see
+[PR size against discussion](#pr-size-against-discussion).)
 
 | Graph | Shape | Why |
 |---|---|---|
@@ -293,6 +295,105 @@ Two things the switch to a canvas cost, and what was done about them:
   the client rebuilds the view when `prefers-color-scheme` changes. Nothing
   watches for a resize any more: Chart.js observes its own container, which
   removed a refetch that used to fire on every window drag.
+
+## PR size against discussion
+
+A repository's page carries one more card: how big its pull requests are, how
+much discussion each drew, and whether the ratio is holding over time. The
+question behind it is whether review attention is keeping up with what is being
+shipped — a repository whose median PR doubles while its comments per hundred
+lines halves is telling you something a commit count cannot.
+
+Three readings, because none is sufficient alone:
+
+| Reading | Shape | Why |
+|---|---|---|
+| Trend | Bars of PRs opened per week or month, against a line of comments per 100 lines changed | Whether attention tracks volume. One count, one ratio, two axes |
+| Each PR | Scatter, size against comments, log x | The outliers. A four-thousand-line change nobody commented on is a point in the bottom right, and no aggregate will show it to you |
+| The numbers | A row per bucket | A chart that cannot be read off is not evidence anyone can take to a retro |
+
+Buckets are weeks up to a 120-day window and months beyond it: a quarter drawn
+in months is four points, and two years drawn in weeks is a hundred. A week is
+labelled by its Monday rather than an ISO week number, which is not something a
+reader can place in a year without counting.
+
+### Measured is not the same as seen
+
+**A pull request with no `pull_metrics` row is excluded from every number on
+the card, never counted as zero.** This is the defect the card is most careful
+about, because it is the one that looks like a finding. Everything collected
+before schema 5 has a `pulls` row and no measurement, and coalescing that to
+zero draws twenty months of enormous, undiscussed pull requests — which is
+indistinguishable on the chart from a real stretch of unreviewed work.
+
+So the card says what fraction it is drawing, and names the command that fixes
+it:
+
+```bash
+ghstats-backfill-pulls --org <org>          # everything unmeasured, newest first
+ghstats-backfill-pulls --org <org> --limit 500   # a fixed amount of budget
+ghstats-backfill-pulls --org <org> --dry-run     # what is missing, and where
+```
+
+It is a separate command rather than part of the sync because its cost is
+proportional to *history* rather than to what changed, which is the opposite of
+everything else `ghstats-sync` does — folding it in would make an unattended
+nightly run occasionally spend an hour of API budget. It is resumable: each
+batch commits on its own and the next run re-derives what is still missing from
+the store, so there is no progress file to trust. It never advances a coverage
+watermark, because it measures what was already collected rather than
+collecting anything.
+
+### What counts as a comment
+
+GitHub splits pull request discussion three ways and no single field totals
+them:
+
+| Source | Field |
+|---|---|
+| The conversation tab | `PullRequest.comments` |
+| Inline comments on the diff | `PullRequestReview.comments`, summed over reviews |
+| The review submission itself | `PullRequestReview.body`, when non-empty |
+
+All three are summed, and stored apart so the definition can change without a
+re-fetch. **An empty review body is not discussion**: an approve click is a
+review with no body and no comments, and counting it would make every
+rubber-stamped pull request look debated.
+
+Size is `additions + deletions`, which puts it on the same scale the rest of
+the explorer already measures commits in. `changed_files` is collected too and
+shows up in the scatter's tooltip.
+
+**Trap: the bots filter cannot reach the comment counts.** `author_login`
+decides which pull requests and which *reviews* are counted, but `comments` and
+`review_comments` are per-PR totals GitHub reports with no author breakdown —
+getting one would mean fetching every comment node instead of a count, which is
+the cost this design exists to avoid. So with bots excluded a Renovate PR drops
+out entirely, while a human PR that a review bot left twelve inline comments on
+still carries all twelve. On a repository with review automation that inflates
+discussion, and the card says so on screen rather than leaving it to be found.
+
+### Medians, not means
+
+Pull request size is heavily skewed: one lockfile refresh or generated-client
+bump is tens of thousands of lines and drags a monthly mean past every real
+change in the month. The medians are what the chart and the headline tiles
+draw; the means are returned alongside, because the gap between the two is
+itself the signal that a month had one of those.
+
+The ratio is computed over the bucket as a whole — total comments over total
+lines — rather than as a mean of per-PR ratios. A one-line PR with two comments
+has a per-PR ratio of 200 per 100 lines, and averaging those lets it outweigh
+every ordinary change in the month. A bucket that changed no lines has no ratio
+at all and is drawn as a gap, not a zero: a zero would read as the reviews
+having stopped when in fact nothing was shipped to review.
+
+The scatter's size axis is logarithmic because PR size spans four orders of
+magnitude in any real repository, and on a linear axis every ordinary change
+collapses into a stripe against the left edge while one lockfile refresh owns
+the rest of the width. A zero-line pull request is plotted at 1 rather than
+dropped — log scales have no zero, and dropping them would hide the reverts and
+branch merges that change nothing and still get argued about.
 
 The legend is DOM, not Chart.js. A Chart.js legend hides datasets in local
 state, which would put a second, invisible filter next to the checkbox row;

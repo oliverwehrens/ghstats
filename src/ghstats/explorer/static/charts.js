@@ -560,3 +560,230 @@ function calendarKey(steps) {
   box.appendChild(el('span', { text: 'More' }));
   return box;
 }
+
+/* -- pull request size against discussion --------------------------------- */
+
+/**
+ * Does review attention keep up with the size of what is being shipped?
+ *
+ * Two plots, because the question has two shapes and one chart cannot hold
+ * both. The trend is bars of how many pull requests a bucket held against a
+ * line of how much discussion each hundred changed lines drew; the scatter is
+ * one dot per pull request, which is where the outliers live — the
+ * four-thousand-line change nobody commented on is a point in the bottom
+ * right, and no aggregate will ever show it to you.
+ *
+ * **Colour follows the same identities as everywhere else.** The four
+ * categorical slots belong to the four event kinds, so a count of pull
+ * requests is drawn in the `pull` colour and a count of discussion in the
+ * `review` colour. Picking a fresh hue here would make "orange" mean PRs on
+ * one card and something else on the next.
+ */
+function pullTrendChart(host, buckets, granularity) {
+  clear(host);
+  if (!buckets.length) { noData(host, 'No measured pull requests in this window.'); return; }
+
+  const t = theme();
+  const pulls = buckets.reduce((sum, b) => sum + b.pulls, 0);
+  const canvas = canvasHost(host, 250,
+    `Pull requests per ${granularity}: ${num(pulls)} across ${buckets.length} ${granularity}s`);
+
+  CHARTS.push(new Chart(canvas, {
+    data: {
+      labels: buckets.map((b) => b.bucket),
+      datasets: [
+        {
+          type: 'bar',
+          label: 'PRs opened',
+          data: buckets.map((b) => b.pulls),
+          backgroundColor: t.pull,
+          borderRadius: 3,
+          maxBarThickness: 34,
+          categoryPercentage: 0.92,
+          barPercentage: 0.98,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'comments per 100 lines',
+          // `null` rather than 0 for a bucket that changed no lines: the ratio
+          // is undefined there, and a zero would draw a dip that reads as "the
+          // reviews stopped" when nothing was shipped to review.
+          data: buckets.map((b) => b.per_100_lines),
+          borderColor: t.review,
+          backgroundColor: alpha(t.review, 0.14),
+          borderWidth: 2,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          tension: 0.25,
+          spanGaps: true,
+          fill: true,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: Object.assign(tooltipStyle(t), {
+          callbacks: {
+            title: (items) => (granularity === 'week'
+              ? 'Week of ' + prettyDay(items[0].label)
+              : items[0].label),
+            label: (item) => {
+              const b = buckets[item.dataIndex];
+              if (item.dataset.type === 'bar') {
+                return ` ${num(b.pulls)} PRs, ${num(b.merged)} merged`;
+              }
+              return b.per_100_lines === null ? ' no lines changed'
+                : ` ${b.per_100_lines.toFixed(1)} comments / 100 lines`;
+            },
+            footer: (items) => {
+              const b = buckets[items[0].dataIndex];
+              return [
+                `median ${num(Math.round(b.lines_median))} lines, `
+                + `${num(Math.round(b.discussion_median))} comments per PR`,
+                `${num(b.undiscussed)} of ${num(b.pulls)} drew no comment`,
+              ];
+            },
+          },
+        }),
+      },
+      scales: {
+        x: categoryAxis(t, false, {
+          autoSkip: true, maxTicksLimit: 14,
+          callback(index) {
+            const label = this.getLabelForValue(index) || '';
+            return granularity === 'week' ? label.slice(5) : label;
+          },
+        }),
+        y: Object.assign(valueAxis(t, false), {
+          position: 'left',
+          title: { display: true, text: 'PRs opened', color: t.tick,
+                   font: { size: 11 } },
+        }),
+        y1: Object.assign(valueAxis(t, false), {
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: t.tick, padding: 8, maxTicksLimit: 6,
+                   callback: (v) => Number(v).toLocaleString() },
+          title: { display: true, text: 'comments / 100 lines', color: t.tick,
+                   font: { size: 11 } },
+        }),
+      },
+    },
+  }));
+}
+
+/**
+ * One dot per pull request: how big it was against how much it was discussed.
+ *
+ * **The size axis is logarithmic.** Pull request size spans four orders of
+ * magnitude in any real repository — a typo fix and a generated-client bump
+ * sit on the same axis — and on a linear scale every ordinary change collapses
+ * into a stripe against the left edge while one lockfile refresh owns the rest
+ * of the width.
+ *
+ * **A zero-line pull request is plotted at 1.** Log scales have no zero, and
+ * dropping those rows would quietly hide the reverts and branch merges that
+ * change nothing and still get argued about.
+ */
+function pullScatterChart(host, points, onPick) {
+  clear(host);
+  if (!points.length) { noData(host, 'No measured pull requests in this window.'); return; }
+
+  const t = theme();
+  const canvas = canvasHost(host, 260,
+    `Pull request size against discussion: ${num(points.length)} pull requests`);
+
+  const split = (merged) => points
+    .filter((p) => p.merged === merged)
+    .map((p) => ({ x: Math.max(p.lines, 1), y: p.discussion, p }));
+
+  CHARTS.push(new Chart(canvas, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        {
+          label: 'merged',
+          data: split(true),
+          backgroundColor: alpha(t.merge, 0.55),
+          borderColor: t.merge,
+          borderWidth: 1,
+          pointRadius: 3.5,
+          pointHoverRadius: 6,
+        },
+        {
+          label: 'not merged',
+          data: split(false),
+          backgroundColor: alpha(t.pull, 0.45),
+          borderColor: t.pull,
+          borderWidth: 1,
+          pointRadius: 3.5,
+          pointHoverRadius: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'nearest', intersect: true },
+      onHover: (event, active, chart) => {
+        chart.canvas.style.cursor = active.length ? 'pointer' : 'default';
+      },
+      onClick: (event, active, chart) => {
+        if (!active.length || !onPick) return;
+        const item = active[0];
+        onPick(chart.data.datasets[item.datasetIndex].data[item.index].p);
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: Object.assign(tooltipStyle(t), {
+          callbacks: {
+            title: (items) => '#' + items[0].raw.p.number + ' · ' + items[0].raw.p.author,
+            label: (item) => {
+              const p = item.raw.p;
+              return [
+                p.title.length > 70 ? p.title.slice(0, 69) + '…' : p.title,
+                `+${num(p.added)} / −${num(p.removed)} in ${num(p.files)} files`,
+                `${num(p.discussion)} comments `
+                + `(${num(p.conversation)} thread, ${num(p.inline)} inline, `
+                + `${num(p.reviews)} review)`,
+              ];
+            },
+            footer: () => 'Click to open the day it opened',
+          },
+        }),
+      },
+      scales: {
+        x: {
+          type: 'logarithmic',
+          border: { color: t.axis },
+          grid: { color: t.grid, drawTicks: false },
+          ticks: {
+            color: t.tick, padding: 5, maxRotation: 0,
+            callback: (v) => {
+              // Only the decade marks. Chart.js otherwise labels 2, 3, 4… on a
+              // log axis, which is nine labels per decade of unreadable axis.
+              const log = Math.log10(v);
+              return Number.isInteger(log) ? Number(v).toLocaleString() : '';
+            },
+          },
+          title: { display: true, text: 'lines changed', color: t.tick,
+                   font: { size: 11 } },
+        },
+        y: Object.assign(valueAxis(t, false), {
+          title: { display: true, text: 'comments', color: t.tick,
+                   font: { size: 11 } },
+        }),
+      },
+    },
+  }));
+}

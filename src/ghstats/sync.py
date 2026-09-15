@@ -76,6 +76,13 @@ fragment CommitFields on Commit {
 }
 """
 
+# `additions`, `deletions` and `changedFiles` are scalars on the node and cost
+# nothing extra. `comments { totalCount }` is a connection asked for its count
+# only -- GitHub prices a connection off its `first`/`last` argument, so a bare
+# `totalCount` adds no nodes to the budget. The inline review comments do not
+# have a PR-level total anywhere in the schema, so they are summed off the
+# review nodes that are being fetched anyway; `_all_reviews` carries the same
+# selection for the deep case.
 _PULL_FIELDS = """
 fragment PullFields on PullRequest {
   number
@@ -85,10 +92,14 @@ fragment PullFields on PullRequest {
   updatedAt
   mergedAt
   closedAt
+  additions
+  deletions
+  changedFiles
   author { login }
+  comments { totalCount }
   reviews(last: %d) {
     totalCount
-    nodes { id state submittedAt body author { login } }
+    nodes { id state submittedAt body author { login } comments { totalCount } }
   }
 }
 """ % REVIEW_PAGE
@@ -167,6 +178,28 @@ def _review_record(node: Dict[str, Any]) -> Dict[str, Any]:
         'submitted_at': node.get('submittedAt'),
         'state': node.get('state'),
         'body': node.get('body') or '',
+        # Not stored on `reviews`; summed into `pull_metrics.review_comments`.
+        'comments': (node.get('comments') or {}).get('totalCount') or 0,
+    }
+
+
+def _pull_metrics(node: Dict[str, Any], reviews: List[Dict[str, Any]]
+                  ) -> Dict[str, Any]:
+    """Size and discussion volume for one pull request node.
+
+    **`review_comments` is only right when `reviews` is the full set.** It is
+    summed over the review records handed in, and `_collect_pulls` drains every
+    review whenever there are more than `REVIEW_PAGE` of them -- so the sum is
+    over all of them, not over the newest twenty. Changing that drain to a
+    truncation would silently undercount discussion on exactly the most
+    reviewed pull requests, which are the ones the chart is about.
+    """
+    return {
+        'additions': node.get('additions') or 0,
+        'deletions': node.get('deletions') or 0,
+        'changed_files': node.get('changedFiles') or 0,
+        'comments': (node.get('comments') or {}).get('totalCount') or 0,
+        'review_comments': sum(r.get('comments') or 0 for r in reviews),
     }
 
 
@@ -183,6 +216,7 @@ def _pull_record(node: Dict[str, Any], reviews: List[Dict[str, Any]]) -> Dict[st
         'merged_at': node.get('mergedAt'),
         'closed_at': node.get('closedAt'),
         'reviews': reviews,
+        'metrics': _pull_metrics(node, reviews),
     }
 
 
@@ -613,7 +647,7 @@ class Syncer:
             pullRequest(number: $number) {
               reviews(first: 100, after: $cursor) {
                 pageInfo { hasNextPage endCursor }
-                nodes { id state submittedAt body author { login } }
+                nodes { id state submittedAt body author { login } comments { totalCount } }
               }
             }
           }

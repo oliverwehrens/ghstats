@@ -141,6 +141,26 @@ CREATE TABLE pulls (
   PRIMARY KEY (repo_id, number)
 );
 
+-- Schema 5. How big a pull request was and how much it was discussed.
+--
+-- A side table rather than columns on `pulls`, because the migration ladder is
+-- additive and because "seen" and "measured" are genuinely different states:
+-- everything collected before schema 5 has a `pulls` row and no measurement
+-- until `ghstats-backfill-pulls` has run. Reads treat a missing row as
+-- unmeasured, never as zero.
+CREATE TABLE pull_metrics (
+  repo_id         INTEGER NOT NULL,
+  number          INTEGER NOT NULL,
+  additions       INTEGER NOT NULL DEFAULT 0,
+  deletions       INTEGER NOT NULL DEFAULT 0,
+  changed_files   INTEGER NOT NULL DEFAULT 0,
+  comments        INTEGER NOT NULL DEFAULT 0,   -- conversation tab
+  review_comments INTEGER NOT NULL DEFAULT 0,   -- inline, summed over reviews
+  measured_at     TEXT    NOT NULL,
+  PRIMARY KEY (repo_id, number),
+  FOREIGN KEY (repo_id, number) REFERENCES pulls(repo_id, number)
+) WITHOUT ROWID;
+
 CREATE TABLE reviews (
   id           TEXT    PRIMARY KEY,       -- GraphQL global id, verified unique
   repo_id      INTEGER NOT NULL,

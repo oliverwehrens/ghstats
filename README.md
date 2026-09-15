@@ -34,7 +34,7 @@ src/ghstats/
     explorer/queries.py    slices of the store, as functions -- no HTTP
     explorer/server.py     loopback JSON API      (ghstats-explore)
     explorer/static/       the single-page UI, and a vendored Chart.js
-    tools/                 inactivity report, migration, verification
+    tools/                 inactivity report, PR backfill, migration, verification
 tests/                     unittest suite, no network
 docs/                      design notes
 scripts/report.sh          sync then reindex -- the whole pipeline
@@ -324,6 +324,25 @@ unclassified while every other number moved.
 ghstats-inactive --org my-org --since 2025-01-01 --output inactive.txt
 ```
 
+```bash
+# Measure PR size and discussion for pull requests collected before schema 5
+ghstats-backfill-pulls --org my-org --dry-run     # what is unmeasured, and where
+ghstats-backfill-pulls --org my-org              # everything, newest PR first
+ghstats-backfill-pulls --org my-org --limit 500  # a fixed amount of API budget
+```
+
+The repository view charts pull request size against the discussion it drew, and it needs
+`pull_metrics` rows to do it. A normal sync records them from now on, but it will never
+reach a pull request nobody has touched since — it pages by `updatedAt` and stops at the
+watermark — so history needs this one-off. It is resumable and safe to interrupt: each
+batch commits on its own and a re-run re-derives what is still missing. Until it has run,
+the card says what fraction of the window it is drawing rather than counting unmeasured
+pull requests as zero-line and undiscussed.
+
+It is a separate command because its cost is proportional to history rather than to what
+changed, which is the opposite of everything `ghstats-sync` does; spending that budget
+should be a decision, not something an unattended nightly run does occasionally.
+
 `ghstats-import-cache` migrates a `.cache/` tree from the JSON layout into the store;
 `ghstats-verify-overlap` is described under Tests.
 
@@ -332,8 +351,9 @@ like a quiet fortnight.
 
 ## How the store works
 
-One SQLite file, `.cache/ghstats.db`. `repos`, `coverage`, `commits`, `pulls`, `reviews`,
-`members` and the `teams` tables hold what was fetched; `commit_trailers`, `identities`,
+One SQLite file, `.cache/ghstats.db`. `repos`, `coverage`, `commits`, `pulls`,
+`pull_metrics`, `reviews`, `members` and the `teams` tables hold what was fetched;
+`commit_trailers`, `identities`,
 `ai_tools`, `issue_refs`, `jira_projects` and `bot_logins` are derived and rebuilt by
 `ghstats-reindex` without touching the network. Full schema in
 [docs/sqlite-store.md](docs/sqlite-store.md).

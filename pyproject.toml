@@ -46,6 +46,7 @@ ghstats-explore = "ghstats.explorer.server:main"
 ghstats-inactive = "ghstats.tools.inactive_users:main"
 ghstats-import-cache = "ghstats.tools.import_cache:main"
 ghstats-verify-overlap = "ghstats.tools.verify_overlap:main"
+ghstats-backfill-pulls = "ghstats.tools.backfill_pulls:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

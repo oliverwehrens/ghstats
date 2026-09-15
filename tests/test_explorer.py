@@ -661,3 +661,184 @@ class StaticFileTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PullDiscussionTest(unittest.TestCase):
+    """Pull request size against the discussion it drew.
+
+    The defect this guards hardest against is the one that looks like a
+    finding: a pull request the store holds but has never *measured* must be
+    excluded, not counted as a zero-line, zero-comment change. Everything
+    synced before schema 5 is in that state until `ghstats-backfill-pulls` has
+    run, and coalescing it to zero draws twenty months of enormous,
+    undiscussed history that never happened.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.conn = connect(str(Path(self.dir.name) / 'store.db'))
+        self.addCleanup(self.conn.close)
+        q.register_functions(self.conn, 'UTC')
+        self.alpha = repo_id(self.conn, ORG, 'alpha')
+
+    def pull(self, number, author, when, *, merged=None, metrics=None):
+        self.conn.execute(
+            'INSERT INTO pulls (repo_id, number, author_login, title, state, '
+            'created_at, merged_at) VALUES (?,?,?,?,?,?,?)',
+            (self.alpha, number, author, f'change {number}',
+             'MERGED' if merged else 'OPEN', when, merged))
+        if metrics:
+            add, delete, files, conversation, inline = metrics
+            self.conn.execute(
+                'INSERT INTO pull_metrics (repo_id, number, additions, '
+                'deletions, changed_files, comments, review_comments, '
+                "measured_at) VALUES (?,?,?,?,?,?,?,'2026-09-01T00:00:00Z')",
+                (self.alpha, number, add, delete, files, conversation, inline))
+
+    def review(self, rid, number, author, body):
+        self.conn.execute(
+            'INSERT INTO reviews (id, repo_id, pull_number, author_login, '
+            "submitted_at, state, body) VALUES (?,?,?,?,'2026-07-11T09:00:00Z',"
+            "'COMMENTED',?)", (rid, self.alpha, number, author, body))
+
+    def ask(self, **kw):
+        return q.pull_discussion(self.conn, ORG,
+                                 q.Filters(tz='UTC', repo='alpha', **kw))
+
+    def test_an_unmeasured_pull_is_excluded_rather_than_counted_as_zero(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(100, 20, 3, 2, 1))
+        self.pull(2, 'ada', '2026-07-11T08:00:00Z')          # never measured
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual(out['measured'], 1)
+        self.assertEqual(out['total'], 2)
+        self.assertEqual(out['unmeasured'], 1)
+        # The median is over the one measured PR, not dragged to zero by the other.
+        self.assertEqual(out['totals']['lines_median'], 120)
+        self.assertEqual([p['number'] for p in out['points']], [1])
+
+    def test_discussion_sums_conversation_inline_and_reviews_with_a_body(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 3, 4))
+        self.review('r1', 1, 'grace', 'please split this')
+        self.conn.commit()
+        out = self.ask()
+        point = out['points'][0]
+        self.assertEqual((point['conversation'], point['inline'], point['reviews']),
+                         (3, 4, 1))
+        self.assertEqual(point['discussion'], 8)
+
+    def test_an_empty_approval_is_not_discussion(self):
+        """An approve click is a review with no body. Counting it would make
+        every rubber-stamped pull request look debated."""
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 0, 0))
+        self.review('r1', 1, 'grace', '')
+        self.review('r2', 1, 'bob', '   ')       # whitespace is not a message
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual(out['points'][0]['discussion'], 0)
+        self.assertEqual(out['totals']['undiscussed'], 1)
+
+    def test_lines_are_additions_plus_deletions(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(30, 12, 2, 0, 0))
+        self.conn.commit()
+        self.assertEqual(self.ask()['points'][0]['lines'], 42)
+
+    def test_the_ratio_is_over_the_bucket_not_a_mean_of_ratios(self):
+        """A one-line PR with two comments has a per-PR ratio of 200 per 100
+        lines. Averaging those would let it outweigh every real change."""
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(1, 0, 1, 2, 0))
+        self.pull(2, 'ada', '2026-07-10T09:00:00Z', metrics=(990, 9, 9, 8, 0))
+        self.conn.commit()
+        totals = self.ask()['totals']
+        self.assertEqual(totals['lines_total'], 1000)
+        self.assertEqual(totals['discussion_total'], 10)
+        self.assertAlmostEqual(totals['per_100_lines'], 1.0)
+
+    def test_a_bucket_that_changed_no_lines_has_no_ratio(self):
+        """None, not zero: the ratio is undefined, and a zero would draw a dip
+        that reads as the reviews having stopped."""
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(0, 0, 0, 3, 0))
+        self.conn.commit()
+        self.assertIsNone(self.ask()['buckets'][0]['per_100_lines'])
+
+    def test_medians_ignore_the_outlier_the_mean_cannot(self):
+        """One generated-client bump must not become the month's typical PR."""
+        for number, size in enumerate([10, 12, 14, 40000], start=1):
+            self.pull(number, 'ada', f'2026-07-0{number}T08:00:00Z',
+                      metrics=(size, 0, 1, 1, 0))
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual(out['totals']['lines_median'], 13)
+        # 1-4 July 2026 is Wed-Sat: one week, so the bucket says the same thing.
+        self.assertEqual(len(out['buckets']), 1)
+        self.assertEqual(out['buckets'][0]['lines_median'], 13)
+        self.assertGreater(out['buckets'][0]['lines_mean'], 10000)
+
+    def test_bots_drop_out_of_both_the_pulls_and_the_review_bodies(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 0, 0))
+        self.pull(2, 'renovate', '2026-07-10T09:00:00Z', metrics=(10, 0, 1, 0, 0))
+        self.review('r1', 1, 'cursor', 'nit: rename this')
+        self.conn.execute("INSERT INTO bot_logins (login, source) VALUES "
+                          "('renovate','bare'), ('cursor','listed')")
+        self.conn.commit()
+
+        without = self.ask()
+        self.assertEqual([p['author'] for p in without['points']], ['ada'])
+        self.assertEqual(without['points'][0]['reviews'], 0)
+
+        with_bots = self.ask(bots=True)
+        self.assertEqual(len(with_bots['points']), 2)
+        self.assertEqual(with_bots['points'][0]['reviews'], 1)
+
+    def test_a_long_window_buckets_by_month(self):
+        self.pull(1, 'ada', '2025-02-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.pull(2, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual(out['granularity'], 'month')
+        self.assertEqual([b['bucket'] for b in out['buckets']],
+                         ['2025-02', '2026-07'])
+
+    def test_a_short_window_buckets_by_week_labelled_by_its_monday(self):
+        """An ISO week number is not something a reader can place in a year."""
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.pull(2, 'ada', '2026-07-11T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.conn.commit()
+        out = self.ask(frm='2026-07-01', to='2026-07-31')
+        self.assertEqual(out['granularity'], 'week')
+        # 10 July 2026 is a Friday, 11 July a Saturday: the same week.
+        self.assertEqual([b['bucket'] for b in out['buckets']], ['2026-07-06'])
+        self.assertEqual(out['buckets'][0]['pulls'], 2)
+
+    def test_the_window_filters_on_when_the_pull_opened(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.pull(2, 'ada', '2026-08-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.conn.commit()
+        out = self.ask(frm='2026-07-01', to='2026-07-31')
+        self.assertEqual([p['number'] for p in out['points']], [1])
+        self.assertEqual(out['total'], 1)
+
+    def test_merged_is_carried_so_the_scatter_can_split_on_it(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z',
+                  merged='2026-07-11T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.pull(2, 'ada', '2026-07-10T09:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual([p['merged'] for p in out['points']], [True, False])
+        self.assertEqual(out['buckets'][0]['merged'], 1)
+
+    def test_an_empty_repository_reports_nothing_rather_than_zeroes(self):
+        self.conn.commit()
+        out = self.ask()
+        self.assertEqual(out['total'], 0)
+        self.assertEqual(out['buckets'], [])
+        self.assertIsNone(out['totals']['per_100_lines'])
+
+
+class MedianTest(unittest.TestCase):
+
+    def test_odd_even_and_empty(self):
+        self.assertEqual(q._median([3, 1, 2]), 2)
+        self.assertEqual(q._median([1, 2, 3, 4]), 2.5)
+        self.assertEqual(q._median([]), 0.0)

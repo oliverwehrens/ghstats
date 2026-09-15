@@ -224,3 +224,109 @@ class DryRunTest(StoreTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def metrics(**kw):
+    record = {'additions': 10, 'deletions': 2, 'changed_files': 3,
+              'comments': 1, 'review_comments': 4}
+    record.update(kw)
+    return record
+
+
+class PullMetricsTest(StoreTestCase):
+    """Size and discussion, written alongside the pull it belongs to.
+
+    The distinction the table exists to keep is between "this pull request was
+    seen" and "this pull request was measured". Blurring the two is what makes
+    an un-backfilled store look like a quiet one.
+    """
+
+    def test_a_record_with_metrics_writes_a_row(self):
+        self.store.merge_pulls('o', 'r', [pull(1, metrics=metrics())],
+                               covered_from=FROM, covered_to=TO)
+        row = self.conn.execute(
+            'SELECT additions, deletions, changed_files, comments, '
+            'review_comments FROM pull_metrics').fetchone()
+        self.assertEqual(tuple(row), (10, 2, 3, 1, 4))
+
+    def test_a_record_without_metrics_writes_no_row(self):
+        """An unmeasured pull must stay unmeasured, not become a row of zeroes:
+        the explorer reads a missing row as "not measured" and a zero row as
+        "a no-op change nobody commented on"."""
+        self.store.merge_pulls('o', 'r', [pull(1)],
+                               covered_from=FROM, covered_to=TO)
+        self.assertEqual(self.count('pulls'), 1)
+        self.assertEqual(self.count('pull_metrics'), 0)
+
+    def test_a_record_without_metrics_does_not_erase_one(self):
+        """`ghstats-import-cache` replays a JSON cache that predates these
+        fields. A blind overwrite there would undo a backfill that cost real
+        API budget."""
+        self.store.merge_pulls('o', 'r', [pull(1, metrics=metrics())],
+                               covered_from=FROM, covered_to=TO)
+        self.store.merge_pulls('o', 'r', [pull(1)],
+                               covered_from=FROM, covered_to=LATER)
+        self.assertEqual(self.count('pull_metrics'), 1)
+        self.assertEqual(
+            self.conn.execute('SELECT additions FROM pull_metrics').fetchone()[0],
+            10)
+
+    def test_a_remeasure_replaces_the_row(self):
+        self.store.merge_pulls('o', 'r', [pull(1, metrics=metrics())],
+                               covered_from=FROM, covered_to=TO)
+        self.store.merge_pulls(
+            'o', 'r', [pull(1, metrics=metrics(additions=99, comments=7))],
+            covered_from=FROM, covered_to=LATER)
+        row = self.conn.execute(
+            'SELECT additions, comments FROM pull_metrics').fetchone()
+        self.assertEqual(tuple(row), (99, 7))
+        self.assertEqual(self.count('pull_metrics'), 1)
+
+
+class BackfillTest(StoreTestCase):
+    """What `ghstats-backfill-pulls` drives."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.merge_pulls(
+            'o', 'r',
+            [pull(1, created_at='2025-06-01T00:00:00Z'),
+             pull(2, created_at='2025-07-01T00:00:00Z', metrics=metrics()),
+             pull(3, created_at='2025-08-01T00:00:00Z')],
+            covered_from=FROM, covered_to=TO)
+
+    def test_lists_only_the_unmeasured_ones(self):
+        self.assertEqual(self.store.unmeasured_pulls('o'), [('r', 3), ('r', 1)])
+
+    def test_lists_newest_first_so_a_capped_run_covers_recent_history(self):
+        self.assertEqual(self.store.unmeasured_pulls('o', limit=1), [('r', 3)])
+
+    def test_can_be_restricted_to_one_repository(self):
+        self.store.merge_pulls('o', 'other', [pull(9)],
+                               covered_from=FROM, covered_to=TO)
+        self.assertEqual(self.store.unmeasured_pulls('o', repo='other'),
+                         [('other', 9)])
+
+    def test_merging_metrics_measures_them(self):
+        written = self.store.merge_pull_metrics(
+            'o', 'r', [dict(metrics(), number=1), dict(metrics(), number=3)],
+            LATER)
+        self.assertEqual(written, 2)
+        self.assertEqual(self.store.unmeasured_pulls('o'), [])
+
+    def test_a_pull_the_store_does_not_hold_is_skipped(self):
+        """A PR opened since the last sync can show up in an enumeration with
+        no `pulls` row behind it; inserting metrics for it would break the
+        foreign key and fail the whole batch."""
+        written = self.store.merge_pull_metrics(
+            'o', 'r', [dict(metrics(), number=404)], LATER)
+        self.assertEqual(written, 0)
+        self.assertEqual(self.count('pull_metrics'), 1)
+
+    def test_a_backfill_does_not_move_a_coverage_watermark(self):
+        """It measures what was already collected. Claiming coverage from it
+        would assert the sync had fetched a window it had not."""
+        before = self.store.coverage('o', 'r', 'pulls')
+        self.store.merge_pull_metrics(
+            'o', 'r', [dict(metrics(), number=1)], LATER)
+        self.assertEqual(self.store.coverage('o', 'r', 'pulls'), before)

@@ -408,6 +408,123 @@ function rankTable(title, rows, opts) {
   return card;
 }
 
+/**
+ * Pull request size against how much discussion it drew.
+ *
+ * Three readings of one question, because none of them is sufficient alone:
+ * the trend says whether review attention is keeping up, the scatter says
+ * which individual changes went through unexamined, and the table is the
+ * numbers — a chart that cannot be read off is not evidence anyone can take
+ * to a retro.
+ *
+ * **An unmeasured pull request is not a zero.** Anything synced before the
+ * store learned to record PR size has no measurement at all, and drawing that
+ * as "no lines, no comments" would invent a stretch of enormous, undiscussed
+ * history. The card refuses to plot rather than guess, and says what to run.
+ */
+function pullSizeCard(bundle) {
+  const data = bundle.pulls;
+  if (!data || !data.total) return null;
+
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('h2', { text: 'PR size and discussion' }));
+
+  if (!data.measured) {
+    card.appendChild(el('div', {
+      class: 'warn',
+      text: `None of the ${num(data.total)} pull requests in this window have `
+          + 'been measured yet. Run ghstats-backfill-pulls --org '
+          + ((META && META.org) || '<org>') + ' to size them.',
+    }));
+    return card;
+  }
+
+  const totals = data.totals;
+  const box = el('div', { class: 'tiles' });
+  [
+    [num(totals.pulls), 'PRs measured'],
+    [num(Math.round(totals.lines_median)), 'median lines changed'],
+    [num(Math.round(totals.discussion_median)), 'median comments'],
+    [totals.per_100_lines === null ? '–' : totals.per_100_lines.toFixed(1),
+     'comments / 100 lines'],
+    [Math.round((totals.undiscussed / totals.pulls) * 100) + '%',
+     'drew no comment'],
+  ].forEach(([value, label]) => {
+    box.appendChild(el('div', { class: 'tile' }, [
+      el('div', { class: 'n', text: value }),
+      el('div', { class: 'l', text: label }),
+    ]));
+  });
+  card.appendChild(box);
+
+  // Said up front, not in a footnote: every number above is over the measured
+  // subset, and a reader who does not know what fraction that is cannot tell a
+  // real trend from a half-backfilled one.
+  if (data.unmeasured) {
+    card.appendChild(el('div', {
+      class: 'warn',
+      text: `${num(data.unmeasured)} of ${num(data.total)} pull requests are `
+          + 'not measured yet and are left out of everything below. Run '
+          + 'ghstats-backfill-pulls to include them.',
+    }));
+  }
+
+  const trendHost = el('div');
+  card.appendChild(el('div', { class: 'count-note',
+    text: 'PRs opened per ' + data.granularity
+        + ', against comments per 100 lines changed' }));
+  card.appendChild(trendHost);
+  whenPlaced(trendHost, () =>
+    pullTrendChart(trendHost, data.buckets, data.granularity));
+
+  const scatterHost = el('div');
+  card.appendChild(el('div', { class: 'count-note',
+    text: data.truncated
+      ? `Each PR, newest ${num(data.points.length)} of ${num(data.measured)}`
+      : 'Each PR: size against comments' }));
+  card.appendChild(scatterHost);
+  whenPlaced(scatterHost, () =>
+    pullScatterChart(scatterHost, data.points, (p) => navigate(['day', p.day])));
+
+  card.appendChild(el('div', { class: 'count-note',
+    text: 'Comment counts are everything on the PR — conversation, inline '
+        + 'review comments, and reviews that carried a message. Conversation '
+        + 'and inline counts are GitHub totals with no author breakdown, so '
+        + 'review bots contribute to them even when bots are filtered out.' }));
+
+  card.appendChild(pullBucketTable(data));
+  return card;
+}
+
+/** The trend as numbers. Oldest first, to read left-to-right like the chart. */
+function pullBucketTable(data) {
+  const table = el('table');
+  const head = el('tr', null, [
+    el('th', { text: data.granularity === 'week' ? 'week of' : 'month' }),
+  ]);
+  ['PRs', 'merged', 'median lines', 'median comments', 'comments',
+   'per 100 lines', 'no comment'].forEach((h) =>
+    head.appendChild(el('th', { class: 'num', text: h })));
+  table.appendChild(el('thead', null, [head]));
+
+  const body = el('tbody');
+  data.buckets.forEach((b) => {
+    body.appendChild(el('tr', null, [
+      el('td', { text: b.bucket }),
+      el('td', { class: 'num', text: num(b.pulls) }),
+      el('td', { class: 'num', text: num(b.merged) }),
+      el('td', { class: 'num', text: num(Math.round(b.lines_median)) }),
+      el('td', { class: 'num', text: num(Math.round(b.discussion_median)) }),
+      el('td', { class: 'num', text: num(b.discussion_total) }),
+      el('td', { class: 'num',
+                 text: b.per_100_lines === null ? '–' : b.per_100_lines.toFixed(1) }),
+      el('td', { class: 'num', text: num(b.undiscussed) }),
+    ]));
+  });
+  table.appendChild(body);
+  return table;
+}
+
 function issueCard(bundle) {
   const card = el('div', { class: 'card' });
   card.appendChild(el('h2', { text: 'Jira' }));
@@ -853,6 +970,7 @@ async function viewRepo(name) {
     calendarCard(data),
     rhythmCard(data),
     aiCard(data),
+    pullSizeCard(data),
     el('div', { class: 'grid2' }, [
       rankTable('Contributors', data.by_actor, { label: 'person', link: (n) => ['users', n] }),
       issueCard(data),

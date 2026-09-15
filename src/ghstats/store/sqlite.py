@@ -25,7 +25,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DEFAULT_DB = '.cache/ghstats.db'
 
@@ -372,10 +372,52 @@ CREATE INDEX ix_issue_refs_project ON issue_refs (project, kind);
 CREATE INDEX ix_team_members_login ON team_members (login, active);
 """
 
+# Tables added in schema 5, applied by both a fresh install and the v4 -> v5
+# step, for the same reason `V4_TABLES` is.
+V5_TABLES = """
+-- Size and discussion volume for one pull request.
+--
+-- **A side table rather than columns on `pulls`, on purpose.** The migration
+-- ladder is additive -- new tables only -- so a twenty-month store gains this
+-- instantly instead of rewriting every pull row. It also keeps the distinction
+-- that matters operationally: a `pulls` row means "this PR was seen", a
+-- `pull_metrics` row means "its size and discussion were measured". A PR
+-- synced before this table existed has the first and not the second, and
+-- `ghstats-backfill-pulls` is what closes the gap. Reads must therefore treat
+-- a missing row as *unmeasured*, never as zero -- a LEFT JOIN that coalesces
+-- to 0 would draw twenty months of un-backfilled history as a flat line of
+-- silent, wrong zeroes, which is exactly the shape a real quiet period has.
+--
+-- **Trap: `comments` and `review_comments` are different connections.**
+-- GitHub splits PR discussion three ways and no single field totals them:
+--
+--   PullRequest.comments        the conversation tab -- issue comments
+--   PullRequestReview.comments  inline comments, hanging off a review
+--   PullRequestReview (itself)  the submission, whose body may be empty
+--
+-- An approve click is a review with no body and no comments, and counting it
+-- as discussion makes every rubber-stamped PR look debated. `discussion` in
+-- the explorer is comments + review_comments + reviews-with-a-body; the three
+-- are stored apart so that definition can change without a re-fetch.
+CREATE TABLE pull_metrics (
+  repo_id         INTEGER NOT NULL,
+  number          INTEGER NOT NULL,
+  additions       INTEGER NOT NULL DEFAULT 0,
+  deletions       INTEGER NOT NULL DEFAULT 0,
+  changed_files   INTEGER NOT NULL DEFAULT 0,
+  comments        INTEGER NOT NULL DEFAULT 0,
+  review_comments INTEGER NOT NULL DEFAULT 0,
+  measured_at     TEXT    NOT NULL,
+  PRIMARY KEY (repo_id, number),
+  FOREIGN KEY (repo_id, number) REFERENCES pulls(repo_id, number)
+) WITHOUT ROWID;
+"""
+
 # Applied in ascending order by `connect` to bring an older store up to date.
 # Keyed on the version each script *produces*.
 MIGRATIONS = {
     4: V4_TABLES,
+    5: V5_TABLES,
 }
 
 
@@ -459,7 +501,7 @@ def connect(path: str, *, create: bool = True) -> sqlite3.Connection:
                 f'{path}: exists but holds no ghstats store. Run '
                 f'`ghstats-sync --org <org> --from <YYYY-MM-DD>` to populate '
                 f'it, or point --db somewhere else.')
-        conn.executescript(SCHEMA + V4_TABLES)
+        conn.executescript(SCHEMA + V4_TABLES + V5_TABLES)
         conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
         conn.commit()
     elif version < SCHEMA_VERSION:
@@ -619,6 +661,12 @@ class SyncStore:
         -- the sync requests only the newest N -- so reviews are unioned rather
         than replaced.
 
+        `pull_metrics` is written only for records that actually carry a
+        measurement. A record without one leaves any existing row alone rather
+        than overwriting it with zeroes: `ghstats-import-cache` replays a JSON
+        cache that predates these fields, and a blind INSERT OR REPLACE there
+        would erase a backfill that cost real API budget.
+
         Returns:
             Tuple of (pulls added, pulls updated, reviews added).
         """
@@ -648,6 +696,9 @@ class SyncStore:
                      canonical_ts(pull.get('updated_at')),
                      canonical_ts(pull.get('merged_at')),
                      canonical_ts(pull.get('closed_at'))))
+                if pull.get('metrics'):
+                    self._put_metrics(rid, pull['number'], pull['metrics'],
+                                      stamp(covered_to))
                 for review in pull.get('reviews') or []:
                     if review['id'] not in known_reviews:
                         reviews_added += 1
@@ -663,6 +714,90 @@ class SyncStore:
 
             self._set_coverage(rid, 'pulls', covered_from, covered_to)
         return added, updated, reviews_added
+
+    def _put_metrics(self, rid: int, number: int,
+                     metrics: Dict[str, Any], measured_at: str) -> None:
+        """Record one pull request's size and discussion volume.
+
+        Assumes the caller already holds the lock and a transaction.
+        """
+        self.conn.execute(
+            'INSERT OR REPLACE INTO pull_metrics (repo_id, number, additions, '
+            'deletions, changed_files, comments, review_comments, measured_at) '
+            'VALUES (?,?,?,?,?,?,?,?)',
+            (rid, number,
+             int(metrics.get('additions') or 0),
+             int(metrics.get('deletions') or 0),
+             int(metrics.get('changed_files') or 0),
+             int(metrics.get('comments') or 0),
+             int(metrics.get('review_comments') or 0),
+             measured_at))
+
+    def unmeasured_pulls(self, org: str, *, repo: Optional[str] = None,
+                         limit: Optional[int] = None
+                         ) -> List[Tuple[str, int]]:
+        """Pull requests in the store with no `pull_metrics` row yet.
+
+        Newest first: a backfill interrupted halfway is far more useful having
+        covered the recent end of history than the far end, and the trend chart
+        reads right-to-left from today.
+
+        Args:
+            org: Organization the store holds.
+            repo: Restrict to one repository.
+            limit: Stop after this many.
+
+        Returns:
+            (repo name, pull number) pairs, newest pull first.
+        """
+        sql = """
+            SELECT r.name AS repo, p.number AS number
+            FROM pulls p
+            JOIN repos r ON r.id = p.repo_id
+            LEFT JOIN pull_metrics m
+                   ON m.repo_id = p.repo_id AND m.number = p.number
+            WHERE r.org = ? AND m.repo_id IS NULL"""
+        params: List[Any] = [org]
+        if repo:
+            sql += ' AND r.name = ?'
+            params.append(repo)
+        sql += ' ORDER BY p.created_at DESC'
+        if limit is not None:
+            sql += ' LIMIT ?'
+            params.append(limit)
+        with self._lock:
+            return [(row['repo'], row['number'])
+                    for row in self.conn.execute(sql, params)]
+
+    def merge_pull_metrics(self, org: str, repo: str,
+                           records: Sequence[Dict[str, Any]],
+                           now: datetime) -> int:
+        """Write measurements for pull requests already in the store.
+
+        Unlike `merge_pulls` this touches no coverage watermark and creates no
+        pull rows: a backfill measures what was already collected, and must not
+        be able to claim coverage the sync has not actually established.
+
+        Returns:
+            How many rows were written.
+        """
+        if self.dry_run:
+            return len(records)
+        measured_at = stamp(now)
+        with self._lock, self.conn:
+            rid = repo_id(self.conn, org, repo)
+            known = {row['number'] for row in self.conn.execute(
+                'SELECT number FROM pulls WHERE repo_id = ?', (rid,))}
+            written = 0
+            for record in records:
+                # A pull the store does not hold would violate the foreign key.
+                # It can happen: a PR opened since the last sync shows up in a
+                # backfill's enumeration but has no row yet.
+                if record['number'] not in known:
+                    continue
+                self._put_metrics(rid, record['number'], record, measured_at)
+                written += 1
+        return written
 
     # -- membership and run history ----------------------------------------
 
