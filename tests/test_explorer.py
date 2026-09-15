@@ -549,6 +549,12 @@ class RoutingTest(StoreFixture):
         for key in ('users', 'totals', 'by_day', 'rhythm', 'filters'):
             self.assertIn(key, body)
 
+    def test_the_repositories_collection_carries_pr_size_across_them(self):
+        body = self.call('/api/repos')
+        self.assertIn('repos', body)
+        self.assertIn('by_repo', body['pulls'])
+        self.assertIn('totals', body['pulls'])
+
     def test_the_event_stream_takes_its_entity_as_a_parameter(self):
         """`/api/events` has no path segment for the entity, which is how the
         client pages a person's stream past the first hundred rows."""
@@ -682,11 +688,13 @@ class PullDiscussionTest(unittest.TestCase):
         q.register_functions(self.conn, 'UTC')
         self.alpha = repo_id(self.conn, ORG, 'alpha')
 
-    def pull(self, number, author, when, *, merged=None, metrics=None):
+    def pull(self, number, author, when, *, merged=None, metrics=None,
+             repo=None):
+        rid = repo or self.alpha
         self.conn.execute(
             'INSERT INTO pulls (repo_id, number, author_login, title, state, '
             'created_at, merged_at) VALUES (?,?,?,?,?,?,?)',
-            (self.alpha, number, author, f'change {number}',
+            (rid, number, author, f'change {number}',
              'MERGED' if merged else 'OPEN', when, merged))
         if metrics:
             add, delete, files, conversation, inline = metrics
@@ -694,7 +702,7 @@ class PullDiscussionTest(unittest.TestCase):
                 'INSERT INTO pull_metrics (repo_id, number, additions, '
                 'deletions, changed_files, comments, review_comments, '
                 "measured_at) VALUES (?,?,?,?,?,?,?,'2026-09-01T00:00:00Z')",
-                (self.alpha, number, add, delete, files, conversation, inline))
+                (rid, number, add, delete, files, conversation, inline))
 
     def review(self, rid, number, author, body):
         self.conn.execute(
@@ -827,6 +835,36 @@ class PullDiscussionTest(unittest.TestCase):
         out = self.ask()
         self.assertEqual([p['merged'] for p in out['points']], [True, False])
         self.assertEqual(out['buckets'][0]['merged'], 1)
+
+    def test_across_repositories_each_gets_its_own_row(self):
+        beta = repo_id(self.conn, ORG, 'beta')
+        gamma = repo_id(self.conn, ORG, 'gamma')
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(100, 0, 1, 2, 0))
+        self.pull(2, 'ada', '2026-07-11T08:00:00Z', metrics=(300, 0, 1, 0, 0))
+        self.pull(1, 'bob', '2026-07-10T08:00:00Z', metrics=(50, 0, 1, 5, 0),
+                  repo=beta)
+        self.pull(1, 'bob', '2026-07-12T08:00:00Z', repo=gamma)  # unmeasured
+        self.conn.commit()
+        out = q.pull_discussion(self.conn, ORG, q.Filters(tz='UTC'),
+                                per_repo=True)
+        self.assertEqual((out['total'], out['measured']), (4, 3))
+        rows = {r['repo']: r for r in out['by_repo']}
+        self.assertEqual([r['repo'] for r in out['by_repo']],
+                         ['alpha', 'beta', 'gamma'])
+        self.assertEqual((rows['alpha']['pulls'], rows['alpha']['lines_median']),
+                         (2, 200))
+        self.assertAlmostEqual(rows['alpha']['per_100_lines'], 0.5)
+        self.assertEqual(rows['alpha']['undiscussed'], 1)
+        self.assertAlmostEqual(rows['beta']['per_100_lines'], 10.0)
+        # A repository nobody has backfilled keeps its row, as unknown.
+        self.assertEqual((rows['gamma']['total'], rows['gamma']['pulls'],
+                          rows['gamma']['unmeasured']), (1, 0, 1))
+        self.assertIsNone(rows['gamma']['per_100_lines'])
+
+    def test_a_single_repository_carries_no_breakdown(self):
+        self.pull(1, 'ada', '2026-07-10T08:00:00Z', metrics=(10, 0, 1, 1, 0))
+        self.conn.commit()
+        self.assertNotIn('by_repo', self.ask())
 
     def test_an_empty_repository_reports_nothing_rather_than_zeroes(self):
         self.conn.commit()

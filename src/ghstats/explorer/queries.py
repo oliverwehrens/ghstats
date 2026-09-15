@@ -966,6 +966,21 @@ def repo_list(conn: sqlite3.Connection, org: str, f: Filters
     return rows
 
 
+def repo_overview(conn: sqlite3.Connection, org: str, f: Filters
+                  ) -> Dict[str, Any]:
+    """The Repositories entry point: every repository, and PR size across them.
+
+    The pull request card here is the same one a repository's page draws, over
+    the whole organization, plus a row per repository -- a repository's own
+    ratio only means something against the ones next to it.
+    """
+    f = _with(f, repo=None)
+    return {
+        'repos': repo_list(conn, org, f),
+        'pulls': pull_discussion(conn, org, f, per_repo=True),
+    }
+
+
 def repo_detail(conn: sqlite3.Connection, org: str, name: str, f: Filters
                 ) -> Dict[str, Any]:
     """What changed in one repository, and who changed it."""
@@ -1204,8 +1219,41 @@ def _weekly(f: Filters, days: Sequence[str]) -> bool:
     return span <= WEEKLY_DAYS
 
 
-def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
-                    ) -> Dict[str, Any]:
+def _pull_summary(members: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Size and discussion over a set of measured pull requests.
+
+    One shape for a trend bucket, the window's totals and a repository's row,
+    so the three cannot drift into disagreeing about what a median is.
+    """
+    lines = [p['lines'] for p in members]
+    discussion = [p['discussion'] for p in members]
+    lines_total = sum(lines)
+    count = len(members)
+    return {
+        'pulls': count,
+        'merged': sum(1 for p in members if p['merged']),
+        'lines_median': _median(lines),
+        'lines_mean': lines_total / count if count else 0.0,
+        'lines_total': lines_total,
+        'files_median': _median([p['files'] for p in members]),
+        'discussion_median': _median(discussion),
+        'discussion_mean': sum(discussion) / count if count else 0.0,
+        'discussion_total': sum(discussion),
+        'conversation': sum(p['conversation'] for p in members),
+        'inline': sum(p['inline'] for p in members),
+        'reviews': sum(p['reviews'] for p in members),
+        # Comments per 100 lines changed, over the set as a whole rather than
+        # as a mean of per-PR ratios: a one-line PR with two comments would
+        # otherwise contribute a ratio of 200 and outweigh every ordinary
+        # change in the month.
+        'per_100_lines': (sum(discussion) * 100.0 / lines_total
+                          if lines_total else None),
+        'undiscussed': sum(1 for p in members if not p['discussion']),
+    }
+
+
+def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters, *,
+                    per_repo: bool = False) -> Dict[str, Any]:
     """How big pull requests are, how much they are discussed, and the trend.
 
     Answers one question -- does review attention keep up with the size of what
@@ -1237,7 +1285,10 @@ def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
 
     Returns:
         `buckets` (the trend, oldest first), `points` (per pull request, for
-        the scatter), `totals`, and the measured/total coverage counts.
+        the scatter), `totals`, and the measured/total coverage counts. With
+        `per_repo`, also `by_repo`: the totals' shape once per repository that
+        opened a pull request in the window, most pull requests first,
+        including repositories none of whose pull requests are measured.
     """
     f = _with(f, kinds=('pull',))
     where, params = _where('pull', f, org)
@@ -1265,9 +1316,13 @@ def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
         WHERE {where}
         ORDER BY p.created_at""", params).fetchall()
 
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM {src['table']} WHERE {where}", params
-    ).fetchone()[0]
+    # Every pull request in the window, measured or not, per repository: the
+    # denominator the card states, and what a repository nobody has backfilled
+    # yet still shows up in the per-repository table with.
+    seen = {row['repo']: row['n'] for row in conn.execute(
+        f"SELECT r.name AS repo, COUNT(*) AS n FROM {src['table']} "
+        f"WHERE {where} GROUP BY r.name", params)}
+    total = sum(seen.values())
 
     points: List[Dict[str, Any]] = []
     for row in rows:
@@ -1288,39 +1343,10 @@ def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
     for point in points:
         grouped.setdefault(_bucket_of(point['day'], weekly), []).append(point)
 
-    buckets = []
-    for key in sorted(grouped):
-        members = grouped[key]
-        lines = [p['lines'] for p in members]
-        discussion = [p['discussion'] for p in members]
-        lines_total = sum(lines)
-        buckets.append({
-            'bucket': key,
-            'pulls': len(members),
-            'merged': sum(1 for p in members if p['merged']),
-            'lines_median': _median(lines),
-            'lines_mean': sum(lines) / len(members),
-            'lines_total': lines_total,
-            'files_median': _median([p['files'] for p in members]),
-            'discussion_median': _median(discussion),
-            'discussion_mean': sum(discussion) / len(members),
-            'discussion_total': sum(discussion),
-            'conversation': sum(p['conversation'] for p in members),
-            'inline': sum(p['inline'] for p in members),
-            'reviews': sum(p['reviews'] for p in members),
-            # Comments per 100 lines changed, over the bucket as a whole rather
-            # than as a mean of per-PR ratios: a one-line PR with two comments
-            # would otherwise contribute a ratio of 200 and outweigh every
-            # ordinary change in the month.
-            'per_100_lines': (sum(discussion) * 100.0 / lines_total
-                              if lines_total else None),
-            'undiscussed': sum(1 for p in members if not p['discussion']),
-        })
+    buckets = [{'bucket': key, **_pull_summary(grouped[key])}
+               for key in sorted(grouped)]
 
-    all_lines = [p['lines'] for p in points]
-    all_discussion = [p['discussion'] for p in points]
-    lines_total = sum(all_lines)
-    return {
+    out = {
         'granularity': 'week' if weekly else 'month',
         'measured': len(points),
         'total': total,
@@ -1330,17 +1356,16 @@ def pull_discussion(conn: sqlite3.Connection, org: str, f: Filters
         # Newest first is what gets kept when there are more than the cap; the
         # list is re-sorted oldest-first so the client never has to care.
         'points': sorted(points[-SCATTER_CAP:], key=lambda p: p['day']),
-        'totals': {
-            'pulls': len(points),
-            'lines_median': _median(all_lines),
-            'lines_total': lines_total,
-            'discussion_median': _median(all_discussion),
-            'discussion_total': sum(all_discussion),
-            'conversation': sum(p['conversation'] for p in points),
-            'inline': sum(p['inline'] for p in points),
-            'reviews': sum(p['reviews'] for p in points),
-            'per_100_lines': (sum(all_discussion) * 100.0 / lines_total
-                              if lines_total else None),
-            'undiscussed': sum(1 for p in points if not p['discussion']),
-        },
+        'totals': _pull_summary(points),
     }
+    if per_repo:
+        by_repo: Dict[str, List[Dict[str, Any]]] = {}
+        for point in points:
+            by_repo.setdefault(point['repo'], []).append(point)
+        out['by_repo'] = sorted((
+            {'repo': name, 'total': count,
+             'unmeasured': count - len(by_repo.get(name, ())),
+             **_pull_summary(by_repo.get(name, ()))}
+            for name, count in seen.items()),
+            key=lambda r: (-r['total'], r['repo']))
+    return out

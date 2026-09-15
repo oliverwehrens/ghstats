@@ -214,7 +214,7 @@ def route_api(store: Store, path: str, params: Dict[str, List[str]]) -> Any:
 
     if head == 'repos':
         if name is None:
-            return {'repos': queries.repo_list(conn, org, f)}
+            return queries.repo_overview(conn, org, f)
         bundle = queries.repo_detail(conn, org, name, f)
         if not bundle['repo']['known']:
             raise NotFound(f'no repository {name!r} in {org}')

@@ -747,7 +747,10 @@ function pullScatterChart(host, points, onPick) {
         legend: { display: false },
         tooltip: Object.assign(tooltipStyle(t), {
           callbacks: {
-            title: (items) => '#' + items[0].raw.p.number + ' · ' + items[0].raw.p.author,
+            title: (items) => {
+              const p = items[0].raw.p;
+              return p.repo + '#' + p.number + ' · ' + p.author;
+            },
             label: (item) => {
               const p = item.raw.p;
               return [

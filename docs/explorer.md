@@ -312,6 +312,14 @@ Three readings, because none is sufficient alone:
 | Each PR | Scatter, size against comments, log x | The outliers. A four-thousand-line change nobody commented on is a point in the bottom right, and no aggregate will show it to you |
 | The numbers | A row per bucket | A chart that cannot be read off is not evidence anyone can take to a retro |
 
+The Repositories entry point draws the same card over every repository, and
+under it a table with one row per repository that opened a pull request in the
+window: PRs, how many are measured, merged, median lines, median comments,
+comments per 100 lines and the share that drew no comment. A repository's own
+ratio only means something against the ones next to it. A repository whose pull
+requests are all unmeasured keeps its row, with dashes rather than zeroes. The
+scatter's tooltip names the repository, since `#123` alone is ambiguous there.
+
 Buckets are weeks up to a 120-day window and months beyond it: a quarter drawn
 in months is four points, and two years drawn in weeks is a hundred. A week is
 labelled by its Monday rather than an ISO week number, which is not something a

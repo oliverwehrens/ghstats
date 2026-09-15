@@ -933,6 +933,12 @@ function reviewCard(data) {
   return card;
 }
 
+/**
+ * The Repositories entry point. Carries the same PR size card a repository's
+ * page does, over every repository, and a row per repository under it: one
+ * repository's comments per hundred lines only means something against the
+ * ones next to it.
+ */
 async function viewRepos() {
   const data = await api('repos');
   show([
@@ -941,7 +947,53 @@ async function viewRepos() {
     rankTable('Repositories', data.repos, {
       label: 'repository', key: 'repo', link: (name) => ['repos', name],
     }),
+    pullSizeCard(data),
+    pullRepoTable(data.pulls),
   ]);
+}
+
+/**
+ * PR size and discussion, one row per repository.
+ *
+ * A repository with pull requests and no measurements keeps its row, with
+ * dashes rather than zeroes, so an un-backfilled repository reads as unknown
+ * instead of as one where nothing is ever discussed.
+ */
+function pullRepoTable(data) {
+  if (!data || !data.by_repo || !data.by_repo.length) return null;
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('h2', { text: 'PR size and discussion by repository' }));
+
+  const table = el('table');
+  const head = el('tr', null, [el('th', { text: 'repository' })]);
+  ['PRs', 'measured', 'merged', 'median lines', 'median comments',
+   'per 100 lines', 'no comment'].forEach((h) =>
+    head.appendChild(el('th', { class: 'num', text: h })));
+  table.appendChild(el('thead', null, [head]));
+
+  const body = el('tbody');
+  data.by_repo.forEach((r) => {
+    const measured = r.pulls > 0;
+    const dash = (value) => (measured ? value : '–');
+    body.appendChild(el('tr', null, [
+      el('td', null, [el('a', {
+        href: '#', text: r.repo,
+        onclick: (e) => { e.preventDefault(); navigate(['repos', r.repo]); },
+      })]),
+      el('td', { class: 'num', text: num(r.total) }),
+      el('td', { class: 'num', text: num(r.pulls) }),
+      el('td', { class: 'num', text: dash(num(r.merged)) }),
+      el('td', { class: 'num', text: dash(num(Math.round(r.lines_median))) }),
+      el('td', { class: 'num', text: dash(num(Math.round(r.discussion_median))) }),
+      el('td', { class: 'num',
+                 text: r.per_100_lines === null ? '–' : r.per_100_lines.toFixed(1) }),
+      el('td', { class: 'num',
+                 text: dash(Math.round((r.undiscussed / r.pulls) * 100) + '%') }),
+    ]));
+  });
+  table.appendChild(body);
+  card.appendChild(table);
+  return card;
 }
 
 async function viewRepo(name) {
