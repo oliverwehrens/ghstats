@@ -1,4 +1,4 @@
-# GitHub User Activity Reporter
+# GitHub Activity Report
 
 Collects GitHub activity across an organization — commits, pull requests, reviews and
 lines changed — into a permanent local store, and serves an interactive explorer over it.
@@ -13,7 +13,6 @@ ghstats-explore   offline   →  http://127.0.0.1:8765  interactive, read-only
 
 `ghstats-sync` is the only thing that talks to GitHub. Everything downstream is a pure
 function of whatever the last sync wrote, so asking it anything costs nothing.
-
 
 See [docs/incremental-cache.md](docs/incremental-cache.md) for why the sync is incremental,
 [docs/sqlite-store.md](docs/sqlite-store.md) for why the store is SQLite, and
