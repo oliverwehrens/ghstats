@@ -419,3 +419,138 @@ All data reaches the DOM through `textContent`. Commit messages, branch names an
 repository names are arbitrary strings from a third party; building HTML out of
 them by concatenation is how a commit message becomes script. A test pins the
 absence of `innerHTML` in the client.
+
+## The SQL page
+
+`#/sql` is a read-only SQL console over the store. It exists because a card's
+number is SQL *plus* Python — medians, buckets and ratios are computed after the
+query — so no statement the explorer runs is the number, and reading
+`queries.py` is a poor way to find out what "comments per 100 lines" counts.
+
+Three things sit on it: an editor, **recipes** that reproduce the cards, and a
+schema panel that says what each column means.
+
+### Parameters are the filter bar
+
+A query can use named parameters, bound from the page's filters:
+
+| Parameter | Value |
+|---|---|
+| `:org` | The organization being served. Every card filters `repos.org` on it |
+| `:from`, `:to` | The date filter as a half-open UTC range — compare with `>=` and `<`; NULL when open |
+| `:tz` | The timezone; `local_date`, `local_hour` and `local_dow` use it |
+| `:repo`, `:user` | Set in the strip under the editor, or carried by a card's link; NULL otherwise |
+| `:bots` | 1 when the bots toggle is on, else 0 |
+
+`:from` and `:to` arrive already converted by `window_utc`, the same function
+the cards use, so `created_at >= :from AND created_at < :to` selects exactly
+what a card counted. The strip shows the values the server actually bound, not
+what the filter bar says now.
+
+Kinds, AI and text search are dimmed on this page: they bind nothing. Repository
+and person have no control in the filter bar because everywhere else they are
+the page you are on, which is why the strip has inputs for them.
+
+`median(x)` is registered alongside the local-time functions, with the same
+definition as the cards' `_median`. NULLs are skipped and no rows is NULL, as
+for any SQL aggregate; text that is not a number is refused rather than read
+as zero.
+
+### Guardrails
+
+The runner (`explorer/sql.py`) executes text a person typed against a store
+that took hours of API budget to fill, so it is read-only three times over:
+
+- **A fresh `mode=ro` connection per run**, so SQLite refuses writes, and a
+  timezone, authorizer or progress handler can never leak onto the connections
+  the cards share.
+- **An authorizer that allows only reading**: `SELECT`, table reads, functions,
+  recursive CTEs, and schema pragmas such as `pragma_table_info`. That also
+  closes what `mode=ro` leaves open — `ATTACH`, `CREATE TEMP`, and pragmas that
+  reconfigure the connection.
+- **One statement per run.** `sqlite3` refuses a second.
+
+A progress handler stops a query after 5 s, and at most 5,000 rows are returned
+with `truncated` set. A recursive CTE without a stop condition is one typo away
+and should cost five seconds, not a hung server thread.
+
+`POST /api/sql` accepts only `Content-Type: application/json`. The Host check
+cannot help here: a page on another site can make the browser POST a form or
+`text/plain` to 127.0.0.1 without asking, and the Host really is 127.0.0.1. A
+JSON body needs a CORS preflight, nothing here answers one, and so the browser
+never sends it.
+
+### Recipes
+
+A recipe is a hand-written query that reproduces one card, written to be read:
+`explorer/recipes/*.sql`. Each opens with a comment header — title, the card it
+explains, the filters it cannot apply — and then explains the definition in
+prose, traps included:
+
+```sql
+-- title: PR size and discussion: the headline numbers
+-- card: pr-size
+-- ignores: team, project, issue, q, ai
+--
+-- 1. A pull request with no pull_metrics row is UNMEASURED, not zero. ...
+```
+
+| Recipe | Reproduces |
+|---|---|
+| `activity-totals` | The tiles on the People, person, repository and day pages |
+| `pr-size-totals` | The tiles on the PR size card |
+| `pr-size-trend` | The PR size trend, weeks or months, and the table under it |
+| `pr-size-by-repo` | The per-repository table on the Repositories page |
+
+Those cards carry a **SQL** link that opens the recipe with the filters and
+entity the card was drawn with. Team, Jira and issue pages have none: the
+recipes do not apply those filters, and a link that opened different numbers
+would teach the wrong thing. When a card's link carries a filter the recipe
+ignores, the page says so.
+
+**A recipe that drifts is worse than none**, because it teaches the wrong
+definition with the tool's authority. `tests/test_recipes.py` runs every recipe
+against a fixture built around the traps — unmeasured pull requests and a
+repository with none measured, bots under both spellings, blank and
+whitespace-only review bodies, a review never submitted, a pull request opened
+at 22:30 UTC on a Sunday that is Monday and the next week in Berlin, an
+authorless pull request, a second organization — and compares it value by value
+with `queries.py` under five filter sets. Changing how a card counts without
+changing its recipe fails there; so does breaking a recipe.
+
+A recipe travels in the URL as `recipe=<id>`. Edited, the text rides alongside
+as `sql=`, the page marks it edited and offers the way back, and saving it makes
+a new saved query — the recipe file is never touched.
+
+### What the columns mean
+
+`explorer/schema_docs.py` holds one sentence for every table, view, column,
+function and parameter: what a value *counts*, which no `PRAGMA table_info` can
+say, and the traps a query writer walks into — a missing `pull_metrics` row is
+unmeasured, bots arrive bare on pull requests, `issue_refs.ref` is text for
+both kinds, team membership is current only. The long-form reasoning stays next
+to the DDL in `store/sqlite.py`.
+
+`GET /api/sql/schema` merges those sentences with the store's live structure,
+and the page draws them as a schema panel with find, insert-at-cursor and a
+first look at any table's rows. Completion as you type covers tables, columns
+through aliases, the registered functions and `:parameters`.
+
+A test fails when a column exists without a description, or a description
+names a column that no longer does, so a migration cannot land without saying
+what it added.
+
+### Saved queries, history and charts
+
+Saved queries and the last 50 queries run live in the browser's `localStorage`
+— per origin, so `localhost` and `127.0.0.1` keep separate lists — with every
+access guarded, so blocked, full or corrupt storage leaves the page working.
+A failing query is recorded too; the draft is the thing worth keeping.
+
+A result can be drawn as bars, lines or a scatter, split by a series column.
+The chart keeps the page's conventions: one value axis, never two; the four
+palette slots in the order the rows introduce series, with anything past the
+fourth folded into a muted **Other**; a legend whenever there are two or more
+series; and a note when rows sharing an x value were summed. Its settings live
+in the hash but are written with `replaceState`, so changing an axis redraws
+from the rows in hand instead of re-running the query.
