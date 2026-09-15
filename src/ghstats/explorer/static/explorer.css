@@ -416,3 +416,64 @@ td.num .diff { white-space: nowrap; }
 }
 .empty { color: var(--ink-muted); padding: 22px 0; }
 .pills { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* -- SQL page ----------------------------------------------------------- */
+
+.filters.sql-pinned .kinds, .filters.sql-pinned .toggle.ai, .filters.sql-pinned .needle {
+  opacity: .4; pointer-events: none;
+}
+
+.sql-editor { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.sql-editor .CodeMirror {
+  height: auto; font: 13px/1.5 var(--mono);
+  background: var(--plane); color: var(--ink);
+}
+.sql-editor .CodeMirror-scroll { min-height: 160px; max-height: 55vh; }
+.sql-editor .CodeMirror-gutters { background: var(--surface-1); border-right: 1px solid var(--grid); }
+.sql-editor .CodeMirror-linenumber { color: var(--ink-muted); }
+.sql-editor .CodeMirror-cursor { border-left-color: var(--ink); }
+.sql-editor .CodeMirror-selected { background: color-mix(in oklab, var(--s1) 18%, transparent); }
+.sql-editor .CodeMirror-focused .CodeMirror-selected { background: color-mix(in oklab, var(--s1) 28%, transparent); }
+.sql-editor .CodeMirror-matchingbracket { color: var(--ink); outline: 1px solid var(--baseline); }
+/* Token colours from the series palette, so the editor changes with the theme. */
+.sql-editor .cm-keyword { color: var(--s1); font-weight: 600; }
+.sql-editor .cm-string { color: var(--s3); }
+.sql-editor .cm-number, .sql-editor .cm-atom { color: var(--s2); }
+.sql-editor .cm-variable-2 { color: var(--s4); }
+.sql-editor .cm-builtin, .sql-editor .cm-type { color: var(--s1); }
+.sql-editor .cm-comment { color: var(--ink-muted); font-style: italic; }
+.sql-editor .cm-operator, .sql-editor .cm-punctuation, .sql-editor .cm-bracket { color: var(--ink-2); }
+.CodeMirror-hints {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .16); font: 12.5px var(--mono); z-index: 60;
+}
+.CodeMirror-hint { color: var(--ink); border-radius: 5px; }
+li.CodeMirror-hint-active { background: var(--s1); color: #fff; }
+
+.sql-bar { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.sql-run {
+  padding: 5px 16px; border: 1px solid var(--s1); border-radius: 8px;
+  background: var(--s1); color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+}
+.sql-run:hover { filter: brightness(1.08); }
+.sql-status { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+
+.sql-params { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; }
+.sql-param { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.sql-param code { font-family: var(--mono); color: var(--s4); }
+.sql-param .v { font-family: var(--mono); }
+.sql-param input {
+  width: 130px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--plane); color: var(--ink); font: 12px var(--mono);
+}
+.null { color: var(--ink-muted); font-family: var(--mono); font-size: 11px; }
+
+.sql-tools { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.sql-tools .more { margin-top: 0; padding: 4px 11px; font-size: 12px; }
+.sql-table { overflow: auto; max-height: 70vh; }
+.sql-table th { position: sticky; top: 0; background: var(--surface-1); }
+.sql-table td {
+  max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px;
+}
+.sql-error { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }

@@ -149,6 +149,22 @@ async function api(path, extra) {
   return body;
 }
 
+/** `api` for the SQL page, whose query is a JSON body rather than a path. */
+async function apiPost(path, payload, extra) {
+  const mine = GENERATION;
+  const query = apiQuery(extra);
+  const response = await fetch('/api/' + path + (query ? '?' + query : ''), {
+    method: 'POST',
+    // The server refuses anything else: see `Handler.do_POST`.
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json();
+  if (mine !== GENERATION) throw STALE;
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
 /* -- filter controls ---------------------------------------------------- */
 
 function isoDay(d) { return d.toISOString().slice(0, 10); }
@@ -194,6 +210,8 @@ function syncFilterUI() {
   // A day view takes its window from the path, so the range controls would lie.
   const onDay = parseHash().parts[0] === 'day' && parseHash().parts.length === 2;
   document.getElementById('filters').classList.toggle('day-pinned', onDay);
+  // Kinds, AI and text search bind no SQL parameter, so they would lie there too.
+  document.getElementById('filters').classList.toggle('sql-pinned', parseHash().parts[0] === 'sql');
   document.getElementById('from').value = f.from || '';
   document.getElementById('to').value = f.to || '';
   document.getElementById('bots').checked = f.bots === '1';
@@ -1384,8 +1402,8 @@ function wireSearch() {
 
   // `/` focuses search, the shortcut every developer tool has.
   document.addEventListener('keydown', (e) => {
-    if (e.key === '/' && document.activeElement.tagName !== 'INPUT'
-        && document.activeElement.tagName !== 'SELECT') {
+    // TEXTAREA too: CodeMirror types into one, and `/` is a SQL operator.
+    if (e.key === '/' && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
       e.preventDefault();
       input.focus();
     }
@@ -1465,6 +1483,7 @@ const ROUTES = [
   [['issues', '*'], viewIssue],
   [['day'], viewDayPicker],
   [['day', '*'], viewDay],
+  [['sql'], viewSql],
 ];
 
 function resolve(parts) {
