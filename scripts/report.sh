@@ -88,6 +88,26 @@ if ! ghstats-reindex; then
     exit 1
 fi
 
+# --- 3. SonarCloud -------------------------------------------------------
+# Optional enrichment, and skipped rather than required when unconfigured: an
+# organization with no SonarCloud account must still get a working report, and
+# hard-requiring these would break every existing cron the day it was added.
+# The explorer already tells "never synced" apart from "no Sonar project", so
+# skipping degrades honestly instead of drawing a dash on every row.
+if [ -n "${SONAR_ORG:-}" ] && [ -n "${SONAR_TOKEN:-}" ]; then
+    if command -v ghstats-sonar >/dev/null; then
+        echo "==> Reading SonarCloud quality gates (network)"
+        if ! ghstats-sonar --sonar-org "$SONAR_ORG" --org "$ORG"; then
+            echo "WARNING: SonarCloud sync failed; the explorer keeps the" \
+                 "previous snapshot." >&2
+        fi
+    else
+        echo "==> Skipping SonarCloud (ghstats-sonar not on PATH)"
+    fi
+else
+    echo "==> Skipping SonarCloud (set SONAR_ORG and SONAR_TOKEN to enable)"
+fi
+
 echo "==> Done. Explore with:"
 if [ -n "${GHSTATS_TZ:-}" ]; then
     echo "      ghstats-explore --timezone \"$GHSTATS_TZ\" --open"

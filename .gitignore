@@ -97,6 +97,11 @@ reports/
 /inactive
 cache.tgz
 
+# Hand-maintained repo -> SonarCloud project map, read by `ghstats-sonar`.
+# Organization data, not code: it names one company's repositories and its
+# Sonar project keys, and it is edited far more often than anything tracked.
+/sonar-projects.txt
+
 # virtualenvwrapper writes the env name to a file, which `.venv/` does not match
 /.venv
 

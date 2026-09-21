@@ -25,7 +25,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DEFAULT_DB = '.cache/ghstats.db'
 
@@ -135,6 +135,7 @@ BOT_LOGINS = frozenset({
 #       'commit query returns HTTP 502 on every attempt, at any batch size; '
 #       'has never synced successfully and holds zero commits',
 UNSYNCABLE_REPOS: Dict[str, str] = {}
+
 
 # Repos, coverage, and the three event tables mirror what the JSON cache held.
 # `commit_trailers` and `identities` are derived -- rebuildable offline from
@@ -413,11 +414,88 @@ CREATE TABLE pull_metrics (
 ) WITHOUT ROWID;
 """
 
+# Tables added in schema 6, applied by both a fresh install and the v5 -> v6
+# step, for the same reason `V4_TABLES` is.
+V6_TABLES = """
+-- SonarCloud's view of a repository: does it have a project, did the quality
+-- gate pass, when was it last analysed.
+--
+-- **Written by `ghstats-sonar` alone, never by the GitHub sweep.** Sonar is a
+-- second network source with its own credentials and its own failure modes,
+-- and the two syncs share no rows precisely so that either can be re-run
+-- without risk to the other's data. A gate status goes stale in hours; a
+-- commit sweep takes minutes and costs API budget. Tying them together would
+-- make the cheap refresh hostage to the expensive one.
+--
+-- **Keyed on the Sonar project, not the repository, and `repo_name` carries no
+-- foreign key into `repos`** -- the same shape as `team_repos`, for the same
+-- reason. A Sonar organization contains projects that correspond to no tracked
+-- repository at all (archived, renamed, or belonging to another org), and
+-- resolving those through `repo_id` would insert coverage-less rows into
+-- `repos` and break every window-taking command. Storing the name records what
+-- SonarCloud said without asserting the repository is part of the tracked set.
+--
+-- A row whose `repo_name` is NULL is a Sonar project nothing matched. It is
+-- kept rather than discarded, because it is the evidence you need when the key
+-- convention turns out not to be the one assumed.
+--
+-- **Trap: `gate_status` has four values, and `NONE` is not `ERROR`.**
+-- SonarCloud reports `OK`, `ERROR`, `WARN` or `NONE`, where `NONE` means the
+-- project exists but has no gate result yet -- a project created but never
+-- analysed. Folding it into `ERROR` would report a failing gate for a project
+-- that has never run, which is a different and much more alarming claim.
+-- **Trap: `NOT NULL` on the primary key is not redundant.** SQLite permits
+-- NULLs in a TEXT PRIMARY KEY on a rowid table -- a long-standing quirk kept
+-- for backwards compatibility -- so a malformed row would insert silently and
+-- then match nothing for the rest of the store's life.
+CREATE TABLE sonar_projects (
+  project_key   TEXT PRIMARY KEY NOT NULL,
+  name          TEXT,
+  repo_name     TEXT,            -- matched GitHub repo, NULL if none matched
+  match_rule    TEXT,            -- 'prefixed' | 'bare' | 'suffix' | NULL
+  last_analysis TEXT,            -- ISO-8601 UTC, NULL if never analysed
+  gate_status   TEXT,            -- 'OK' | 'ERROR' | 'WARN' | 'NONE' | NULL
+  fetched_at    TEXT NOT NULL
+);
+
+CREATE INDEX ix_sonar_projects_repo ON sonar_projects (repo_name);
+
+-- One row per `ghstats-sonar` run, appended.
+--
+-- **Separate from `sync_runs` on purpose.** A successful Sonar run that
+-- matches nothing leaves `sonar_projects` empty, which is indistinguishable
+-- from never having run -- and the explorer must tell those apart, because the
+-- first means "no repository here has a Sonar project" and the second means
+-- "nobody has asked Sonar yet". Only a run record can carry that difference.
+--
+-- It is not a `kind` column on `sync_runs` because the two runs share no
+-- measurements: `points` and `repos_failed` are meaningless for Sonar, and
+-- `meta()` reads the newest complete `sync_runs` row to draw the GitHub
+-- freshness banner. Mixing Sonar rows into that table would move the banner
+-- every time a five-second job ran.
+-- `base_url` is here rather than in a constant so the explorer can build a
+-- link that points at the server the data actually came from. It is the only
+-- thing that would need changing for a self-hosted SonarQube, and keeping it
+-- beside the run means a store fetched from one server does not link to
+-- another.
+CREATE TABLE sonar_runs (
+  id             INTEGER PRIMARY KEY,
+  started_at     TEXT NOT NULL,
+  finished_at    TEXT,
+  sonar_org      TEXT NOT NULL,
+  base_url       TEXT NOT NULL,
+  projects_found INTEGER,
+  repos_matched  INTEGER,
+  seconds        REAL
+);
+"""
+
 # Applied in ascending order by `connect` to bring an older store up to date.
 # Keyed on the version each script *produces*.
 MIGRATIONS = {
     4: V4_TABLES,
     5: V5_TABLES,
+    6: V6_TABLES,
 }
 
 
@@ -501,7 +579,7 @@ def connect(path: str, *, create: bool = True) -> sqlite3.Connection:
                 f'{path}: exists but holds no ghstats store. Run '
                 f'`ghstats-sync --org <org> --from <YYYY-MM-DD>` to populate '
                 f'it, or point --db somewhere else.')
-        conn.executescript(SCHEMA + V4_TABLES + V5_TABLES)
+        conn.executescript(SCHEMA + V4_TABLES + V5_TABLES + V6_TABLES)
         conn.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
         conn.commit()
     elif version < SCHEMA_VERSION:
@@ -939,6 +1017,63 @@ class SyncStore:
                 [(slug,) for slug in left])
         return {'teams_joined': joined, 'teams_left': left,
                 'member_changes': member_changes}
+
+    # -- sonar -------------------------------------------------------------
+
+    def replace_sonar_projects(self, records: Sequence[Dict[str, Any]],
+                               now: datetime) -> int:
+        """Replace the whole SonarCloud snapshot in one transaction.
+
+        **All or nothing, and a full replacement rather than a merge.** Sonar
+        reports current state, not history: a project deleted from the
+        organization, or renamed, must vanish from the store rather than linger
+        as a gate status that will never change again. The dataset is one
+        organization's project list -- small enough to hold in memory -- so the
+        old rows are dropped and the new ones written inside a single
+        transaction. A fetch that fails halfway therefore leaves yesterday's
+        complete snapshot rather than a table that is half old and half new
+        with no way to tell which rows are which.
+
+        Args:
+            records: Dicts of `project_key`, `name`, `repo_name`, `match_rule`,
+                `last_analysis` and `gate_status`.
+            now: Fetch timestamp, stamped onto every row.
+
+        Returns:
+            How many rows were written.
+        """
+        if self.dry_run:
+            return len(records)
+        fetched_at = stamp(now)
+        with self._lock, self.conn:
+            self.conn.execute('DELETE FROM sonar_projects')
+            self.conn.executemany(
+                'INSERT INTO sonar_projects (project_key, name, repo_name, '
+                'match_rule, last_analysis, gate_status, fetched_at) '
+                'VALUES (?,?,?,?,?,?,?)',
+                [(r['project_key'], r.get('name'), r.get('repo_name'),
+                  r.get('match_rule'), canonical_ts(r.get('last_analysis')),
+                  r.get('gate_status'), fetched_at) for r in records])
+        return len(records)
+
+    def record_sonar_run(self, *, started_at: datetime, finished_at: datetime,
+                         sonar_org: str, base_url: str, projects_found: int,
+                         repos_matched: int, seconds: Optional[float]) -> None:
+        """Append one row of Sonar sync history.
+
+        This is what distinguishes "no repository has a Sonar project" from
+        "nobody has asked Sonar yet"; the explorer renders the two differently
+        and cannot tell them apart from `sonar_projects` alone.
+        """
+        if self.dry_run:
+            return
+        with self._lock, self.conn:
+            self.conn.execute(
+                'INSERT INTO sonar_runs (started_at, finished_at, sonar_org, '
+                'base_url, projects_found, repos_matched, seconds) '
+                'VALUES (?,?,?,?,?,?,?)',
+                (stamp(started_at), stamp(finished_at), sonar_org,
+                 base_url, projects_found, repos_matched, seconds))
 
     def record_run(self, *, started_at: datetime, finished_at: datetime,
                    repos_synced: int, repos_failed: int, points: Optional[int],

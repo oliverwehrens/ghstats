@@ -24,9 +24,10 @@ because they defer to `zoneinfo` per row rather than adding a fixed offset.
 import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import quote
 
 from ghstats.localtime import UTC, zone as _zone
-from ghstats.store.sqlite import UNSYNCABLE_REPOS
+from ghstats.store.sqlite import UNSYNCABLE_REPOS, _placeholders
 
 # The four things that can appear in the stream. A pull request contributes two
 # events, not one: it was opened on one day and merged on another, and "what
@@ -950,6 +951,54 @@ def repo_list(conn: sqlite3.Connection, org: str, f: Filters
     return rows
 
 
+def sonar(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """SonarCloud's current view of the repositories, keyed by repository name.
+
+    **Not a join into `_grouped`, and not windowed.** `_grouped` backs People,
+    Teams and Day as well as Repositories, so a LEFT JOIN there would leak
+    Sonar columns into three views that have no use for them. And a quality
+    gate has no notion of a date range: it is the state right now, so moving
+    the window leaves these values where they are. The explorer says so in the
+    column tooltips rather than letting someone conclude the page is stuck.
+
+    **`synced` is the point of the `sonar_runs` table.** A run that matched
+    nothing leaves `projects` empty, which is indistinguishable from never
+    having run -- and the two must render differently, because rendering the
+    second as the first tells every repository it has no code quality coverage
+    on the strength of a question nobody asked.
+
+    Returns:
+        `synced` (has `ghstats-sonar` ever run), `last_run`, `org`, and
+        `repos`: repository name -> `key`, `gate`, `last_analysis`, `url`.
+    """
+    run = conn.execute(
+        'SELECT started_at, finished_at, sonar_org, base_url '
+        'FROM sonar_runs ORDER BY started_at DESC LIMIT 1').fetchone()
+    if run is None:
+        return {'synced': False, 'last_run': None, 'org': None, 'repos': {}}
+
+    base = (run['base_url'] or '').rstrip('/')
+    repos = {}
+    for row in conn.execute(
+            'SELECT repo_name, project_key, gate_status, last_analysis '
+            'FROM sonar_projects WHERE repo_name IS NOT NULL'):
+        repos[row['repo_name']] = {
+            'key': row['project_key'],
+            'gate': row['gate_status'],
+            'last_analysis': row['last_analysis'],
+            # `safe=''` because a project key may contain a slash or a colon,
+            # and both are meaningful in the URL that would carry them raw.
+            'url': (f'{base}/project/overview'
+                    f'?id={quote(row["project_key"], safe="")}'),
+        }
+    return {
+        'synced': True,
+        'last_run': run['finished_at'] or run['started_at'],
+        'org': run['sonar_org'],
+        'repos': repos,
+    }
+
+
 def repo_overview(conn: sqlite3.Connection, org: str, f: Filters
                   ) -> Dict[str, Any]:
     """The Repositories entry point: every repository, and PR size across them.
@@ -957,11 +1006,37 @@ def repo_overview(conn: sqlite3.Connection, org: str, f: Filters
     The pull request card here is the same one a repository's page draws, over
     the whole organization, plus a row per repository -- a repository's own
     ratio only means something against the ones next to it.
+
+    `sonar` rides alongside rather than inside the rows, because it is the one
+    thing here the window does not touch. See `sonar()`.
     """
     f = _with(f, repo=None)
     return {
         'repos': repo_list(conn, org, f),
         'pulls': pull_discussion(conn, org, f, per_repo=True),
+        'sonar': sonar(conn),
+    }
+
+
+def _repo_sonar(conn: sqlite3.Connection, name: str) -> Dict[str, Any]:
+    """One repository's SonarCloud state, for its own page.
+
+    Carries `assumed` when nothing matched: the key a convention-based lookup
+    would have used. That is the difference between "this repository has no
+    Sonar project" and "its project is not named the way this tool guessed",
+    and the page says which without the reader having to run the sync to find
+    out.
+    """
+    state = sonar(conn)
+    if not state['synced']:
+        return {'synced': False}
+    found = state['repos'].get(name)
+    if found:
+        return {'synced': True, **found}
+    return {
+        'synced': True,
+        'key': None,
+        'assumed': f'{state["org"]}_{name}' if state['org'] else None,
     }
 
 
@@ -985,6 +1060,7 @@ def repo_detail(conn: sqlite3.Connection, org: str, name: str, f: Filters
             FROM team_repos tr JOIN teams t ON t.slug = tr.team_slug
             WHERE tr.repo_name = ? AND tr.active = 1 AND t.active = 1
             ORDER BY t.name""", (name,))],
+        'sonar': _repo_sonar(conn, name),
     }
     bundle['by_actor'] = _grouped(conn, org, f, 'actor')
     bundle['pulls'] = pull_discussion(conn, org, f)
@@ -1015,6 +1091,45 @@ def team_list(conn: sqlite3.Connection) -> Dict[str, Any]:
         AND NOT EXISTS (SELECT 1 FROM team_members t
                         WHERE t.login = m.login AND t.active = 1)""").fetchone()[0]
     return {'teams': teams, 'unassigned': unassigned}
+
+
+def repo_teams(conn: sqlite3.Connection, names: Sequence[str]
+               ) -> Dict[str, List[Dict[str, Any]]]:
+    """Which teams hold a grant on each of these repositories.
+
+    **A grant is access, not ownership, and GitHub records nothing else.** The
+    explorer says "granted to" rather than "owned by" because the data does not
+    support the stronger word: on the organization this was built against, four
+    grants in five are ADMIN and half the repositories are granted to two teams
+    or more -- one to seventeen. Picking a single owner out of that would mean
+    inventing a rule GitHub does not have, and the answer would be wrong often
+    enough to mislead.
+
+    What it *can* answer is the question behind the ask: this team works in a
+    repository, does the team have it, and if not, who does.
+
+    Args:
+        names: Repository names. Usually the two dozen a team worked in, so
+            one query with an IN list rather than a join into the grouping.
+
+    Returns:
+        Repository name -> list of `slug`, `name`, `permission`, in team-name
+        order. A repository nobody has a grant on is absent.
+    """
+    if not names:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for row in conn.execute(f"""
+            SELECT tr.repo_name AS repo, t.slug AS slug, t.name AS name,
+                   tr.permission AS permission
+            FROM team_repos tr JOIN teams t ON t.slug = tr.team_slug
+            WHERE tr.active = 1 AND t.active = 1
+              AND tr.repo_name IN ({_placeholders(len(names))})
+            ORDER BY tr.repo_name, t.name""", list(names)):
+        out.setdefault(row['repo'], []).append(
+            {'slug': row['slug'], 'name': row['name'],
+             'permission': row['permission']})
+    return out
 
 
 def team_detail(conn: sqlite3.Connection, org: str, slug: str, f: Filters
@@ -1059,6 +1174,15 @@ def team_detail(conn: sqlite3.Connection, org: str, slug: str, f: Filters
     }
     bundle['by_repo'] = _grouped(conn, org, f, 'repo')
     bundle['by_actor'] = _grouped(conn, org, f, 'actor')
+    # Beside the rows rather than joined into them, for the same reason it is
+    # on the Repositories page: a gate is current state, and `_grouped` is
+    # shared with three other views that have no use for one.
+    bundle['sonar'] = sonar(conn)
+    # `by_repo` is where this team's members *worked*, which is not the same as
+    # what this team *has*. Both facts are worth seeing together, so the grants
+    # for exactly those repositories ride along.
+    bundle['repo_teams'] = repo_teams(
+        conn, [row['name'] for row in bundle['by_repo']])
     return bundle
 
 

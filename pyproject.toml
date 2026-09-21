@@ -39,8 +39,10 @@ Repository = "https://github.com/oliverwehrens/ghstats"
 Issues = "https://github.com/oliverwehrens/ghstats/issues"
 
 [project.scripts]
-# Only ghstats-sync touches the network; everything else reads the store.
+# ghstats-sync and ghstats-sonar are the only two that touch the network, and
+# they talk to different services; everything else reads the store.
 ghstats-sync = "ghstats.sync:main"
+ghstats-sonar = "ghstats.sonar.sync:main"
 ghstats-reindex = "ghstats.reindex:main"
 ghstats-explore = "ghstats.explorer.server:main"
 ghstats-inactive = "ghstats.tools.inactive_users:main"

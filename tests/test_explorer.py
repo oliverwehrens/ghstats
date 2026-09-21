@@ -916,3 +916,53 @@ class MedianTest(unittest.TestCase):
         self.assertEqual(q._median([3, 1, 2]), 2)
         self.assertEqual(q._median([1, 2, 3, 4]), 2.5)
         self.assertEqual(q._median([]), 0.0)
+
+
+class RepoTeamsTest(unittest.TestCase):
+    """Which teams hold a grant on a repository.
+
+    A grant is access, not ownership: GitHub records nothing stronger, and a
+    repository commonly carries several. The query returns all of them and
+    lets the caller decide what to say about it.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.conn = connect(str(Path(self.dir.name) / 'store.db'))
+        self.addCleanup(self.conn.close)
+        when = '2026-09-21T00:00:00Z'
+        for slug, name in (('platform', 'Platform'), ('payments', 'Payments'),
+                           ('gone', 'Dissolved')):
+            self.conn.execute(
+                'INSERT INTO teams (slug, name, first_seen, last_seen, active) '
+                'VALUES (?,?,?,?,?)',
+                (slug, name, when, when, 0 if slug == 'gone' else 1))
+        self.conn.executemany(
+            'INSERT INTO team_repos (team_slug, repo_name, permission, active) '
+            'VALUES (?,?,?,?)',
+            [('platform', 'widget', 'ADMIN', 1),
+             ('payments', 'widget', 'WRITE', 1),
+             ('gone', 'widget', 'ADMIN', 1),
+             ('platform', 'archived-thing', 'READ', 0)])
+        self.conn.commit()
+
+    def test_returns_every_team_with_a_grant(self):
+        got = q.repo_teams(self.conn, ['widget'])
+        self.assertEqual([(t['slug'], t['permission']) for t in got['widget']],
+                         [('payments', 'WRITE'), ('platform', 'ADMIN')])
+
+    def test_a_dissolved_team_does_not_count_as_an_owner(self):
+        """`teams.active = 0` is a team that no longer exists."""
+        self.assertNotIn('gone',
+                         [t['slug'] for t in q.repo_teams(self.conn, ['widget'])['widget']])
+
+    def test_a_revoked_grant_does_not_count(self):
+        self.assertEqual(q.repo_teams(self.conn, ['archived-thing']), {})
+
+    def test_a_repository_nobody_has_is_absent_not_empty(self):
+        self.assertEqual(q.repo_teams(self.conn, ['nobody-owns-this']), {})
+
+    def test_no_names_asks_nothing(self):
+        """`IN ()` is a syntax error in SQLite; the empty case is branched."""
+        self.assertEqual(q.repo_teams(self.conn, []), {})
