@@ -252,6 +252,11 @@ ghstats-explore --timezone Europe/Berlin --open
 | `--host` / `--port` | Bind address and port (default `127.0.0.1:8765`) |
 | `--open` | Open a browser once the server is up |
 
+The default bind answers only from this machine. `ghstats-explore --host 0.0.0.0` listens
+on every interface instead, so a browser elsewhere on the network can open it; the banner
+prints a URL that machine can use. There is no login, so anyone who can reach the port
+reads the whole store -- widen the bind only on a network you trust.
+
 Five entry points, each bottoming out in the actual commits, PRs and reviews, and a SQL page
 for checking what their numbers are made of:
 

@@ -13,8 +13,12 @@ so a bug in a handler cannot write to the file that took hours of API budget to
 fill. `ghstats-sync` can run against the same store while this is serving --
 that is what WAL is for.
 
-**Loopback only.** There is no authentication because there is no remote
-listener: the default bind is 127.0.0.1. `--host` can widen that, and says so.
+**Loopback by default.** There is no authentication because by default there is
+no remote listener: the bind is 127.0.0.1. `--host 0.0.0.0` widens that to every
+interface so browsers on other machines can reach it -- the banner then warns,
+prints a URL those machines can use, and drops the `Host` check, because the
+whole point is to answer for names other than localhost. Anyone who can reach
+the port then gets the whole store, so widen it only on a trusted network.
 The `Host` header is still checked, because a page in the user's browser can
 resolve an attacker-controlled name to 127.0.0.1 and would otherwise reach this
 server with the browser's blessing.
@@ -27,6 +31,7 @@ one person.
 import argparse
 import json
 import os
+import socket
 import sqlite3
 import sys
 import threading
@@ -413,6 +418,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), content_type)
 
 
+def _reachable_host(host: str) -> str:
+    """A hostname another machine can actually type, for the printed URL.
+
+    A wildcard bind is an address to listen on, not one to visit: printing
+    `http://0.0.0.0:8765/` hands the user a URL that works nowhere. Ask the
+    kernel which local address it would use to reach off-machine, which is the
+    one a browser on the LAN wants. No packet is sent -- a connected UDP socket
+    only fixes a route.
+    """
+    if host not in ('0.0.0.0', '::', ''):
+        return host
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(('192.0.2.1', 9))  # TEST-NET-1, guaranteed unrouted
+        return sock.getsockname()[0]
+    except OSError:
+        return socket.gethostname()
+    finally:
+        sock.close()
+
+
 def serve(db: str, org: str, tz_name: str, host: str, port: int,
           open_browser: bool = False) -> int:
     """Run until interrupted. Returns a process exit code."""
@@ -455,7 +481,7 @@ def serve(db: str, org: str, tz_name: str, host: str, port: int,
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
-    url = f'http://{host}:{port}/'
+    url = f'http://{_reachable_host(host)}:{port}/'
 
     print(f'ghstats-explore  {org}  {db}')
     print(f'  timezone {tz_name}, schema {version}, read-only')
