@@ -82,7 +82,7 @@ Check it took:
 
 ```bash
 ghstats-sync --help                     # the console scripts are on PATH
-python -m unittest discover -s tests    # 221 tests, no network, no token
+python -m unittest discover -s tests    # 317 tests, no network, no token
 ```
 
 Every new shell needs `source .venv/bin/activate` again. `report.sh` can do it for you:
@@ -252,7 +252,8 @@ ghstats-explore --timezone Europe/Berlin --open
 | `--host` / `--port` | Bind address and port (default `127.0.0.1:8765`) |
 | `--open` | Open a browser once the server is up |
 
-Five entry points, each bottoming out in the actual commits, PRs and reviews:
+Five entry points, each bottoming out in the actual commits, PRs and reviews, and a SQL page
+for checking what their numbers are made of:
 
 | View | Answers |
 |---|---|
@@ -261,6 +262,7 @@ Five entry points, each bottoming out in the actual commits, PRs and reviews:
 | **Teams** | What a group changed, rolled up and per member |
 | **Jira** | A project's issues, or everything referencing one key |
 | **Day** | One local day, cross-cut by team, repository and person |
+| **SQL** | Read-only queries over the store, with recipes that reproduce the cards |
 
 They share one filterable event stream, so every chart drills into the same place; clicking
 a bar, or a square in the contribution calendar, opens that day. The URL hash holds the
@@ -275,6 +277,14 @@ person's page each day is split by repository.
 The store is opened `mode=ro`, so a sync can run while it serves and no handler can write to
 the file. It binds to loopback and checks the `Host` header — there is no auth because there
 is no remote listener.
+
+**The SQL page is for understanding a metric, not replacing one.** The activity tiles and
+the PR size cards carry a **SQL** link that opens a *recipe*: a commented query that
+reproduces the card, tested to agree with it. From there it can be edited, charted, saved in
+the browser, or used as the start of a different question. Queries bind the filter bar as
+`:from`, `:to`, `:tz`, `:repo`, `:user`, `:bots` and `:org`; a schema panel says what every
+column counts. It is read-only by construction — see
+[The SQL page](docs/explorer.md#the-sql-page) for the guardrails.
 
 **A pull request is two events, not one:** opened on one day, merged on another. "What did she
 work on" means the opening; "what changed on Tuesday" means the merge. Collapsing both onto
@@ -456,8 +466,9 @@ network.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests    # 221 tests, no network
+python -m unittest discover -s tests    # 317 tests, no network
 pytest                                  # the same suite, if you installed [dev]
+PYTHONPATH=src python -m unittest discover -s tests   # from a checkout, not installed
 ```
 
 The suite needs no token, no network and no fixtures to download — a consequence of only

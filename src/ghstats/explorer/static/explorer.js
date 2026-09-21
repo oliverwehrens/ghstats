@@ -149,6 +149,22 @@ async function api(path, extra) {
   return body;
 }
 
+/** `api` for the SQL page, whose query is a JSON body rather than a path. */
+async function apiPost(path, payload, extra) {
+  const mine = GENERATION;
+  const query = apiQuery(extra);
+  const response = await fetch('/api/' + path + (query ? '?' + query : ''), {
+    method: 'POST',
+    // The server refuses anything else: see `Handler.do_POST`.
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json();
+  if (mine !== GENERATION) throw STALE;
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
 /* -- filter controls ---------------------------------------------------- */
 
 function isoDay(d) { return d.toISOString().slice(0, 10); }
@@ -194,6 +210,8 @@ function syncFilterUI() {
   // A day view takes its window from the path, so the range controls would lie.
   const onDay = parseHash().parts[0] === 'day' && parseHash().parts.length === 2;
   document.getElementById('filters').classList.toggle('day-pinned', onDay);
+  // Kinds, AI and text search bind no SQL parameter, so they would lie there too.
+  document.getElementById('filters').classList.toggle('sql-pinned', parseHash().parts[0] === 'sql');
   document.getElementById('from').value = f.from || '';
   document.getElementById('to').value = f.to || '';
   document.getElementById('bots').checked = f.bots === '1';
@@ -265,13 +283,32 @@ function legend() {
 /* -- shared blocks ------------------------------------------------------ */
 
 /**
+ * A link to the SQL page with the recipe that reproduces a card, carrying the
+ * filters the card was drawn with. `entity` supplies what the page's path
+ * holds -- a repository, a person, a day -- since those are not query
+ * parameters here.
+ */
+function sqlLink(recipe, entity, label) {
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(currentFilters())) {
+    if (!ENTITY_KEYS.includes(k) && k !== 'offset' && k !== 'limit') query.set(k, v);
+  }
+  for (const [k, v] of Object.entries(entity || {})) if (v) query.set(k, v);
+  query.set('recipe', recipe);
+  return el('a', {
+    class: 'sql-link', href: '#/sql?' + query.toString(),
+    text: label || 'SQL', title: 'Open the query behind these numbers',
+  });
+}
+
+/**
  * Headline counts.
  *
  * `omit` drops a tile that cannot say anything in this view: "people: 1" on a
  * person's page is noise where a number should be, and so is the repository
  * count on a repository's.
  */
-function tiles(totals, omit) {
+function tiles(totals, omit, link) {
   const skip = omit || [];
   const box = el('div', { class: 'tiles' });
   const spec = [
@@ -294,7 +331,8 @@ function tiles(totals, omit) {
     el('div', { class: 'n', text: '−' + num(totals.lines_removed) }),
     el('div', { class: 'l', text: 'lines removed' }),
   ]));
-  return box;
+  if (!link) return box;
+  return el('div', { class: 'tiles-wrap' }, [box, el('div', { class: 'sql-note' }, [link])]);
 }
 
 /**
@@ -422,12 +460,12 @@ function rankTable(title, rows, opts) {
  * as "no lines, no comments" would invent a stretch of enormous, undiscussed
  * history. The card refuses to plot rather than guess, and says what to run.
  */
-function pullSizeCard(bundle) {
+function pullSizeCard(bundle, entity) {
   const data = bundle.pulls;
   if (!data || !data.total) return null;
 
   const card = el('div', { class: 'card' });
-  card.appendChild(el('h2', { text: 'PR size and discussion' }));
+  card.appendChild(el('h2', null, ['PR size and discussion', sqlLink('pr-size-totals', entity)]));
 
   if (!data.measured) {
     card.appendChild(el('div', {
@@ -859,7 +897,7 @@ async function viewUsers() {
     (currentFilters().bots === '1' ? ', bots included' : ', bots excluded');
   show([
     crumb('People', 'entry point'),
-    tiles(data.totals),
+    tiles(data.totals, null, sqlLink('activity-totals', null, 'SQL behind these counts')),
     chartCard(data),
     calendarCard(data),
     rhythmCard(data),
@@ -885,7 +923,7 @@ async function viewUser(login) {
 
   show([
     crumb(login, 'person', extras),
-    tiles(data.totals, ['people']),
+    tiles(data.totals, ['people'], sqlLink('activity-totals', { user: login }, 'SQL behind these counts')),
     chartCard(data),
     calendarCard(data),
     rhythmCard(data),
@@ -962,7 +1000,8 @@ async function viewRepos() {
 function pullRepoTable(data) {
   if (!data || !data.by_repo || !data.by_repo.length) return null;
   const card = el('div', { class: 'card' });
-  card.appendChild(el('h2', { text: 'PR size and discussion by repository' }));
+  card.appendChild(el('h2', null, ['PR size and discussion by repository',
+                                   sqlLink('pr-size-by-repo')]));
 
   const table = el('table');
   const head = el('tr', null, [el('th', { text: 'repository' })]);
@@ -1017,12 +1056,12 @@ async function viewRepo(name) {
   }
 
   blocks.push(
-    tiles(data.totals, ['repos']),
+    tiles(data.totals, ['repos'], sqlLink('activity-totals', { repo: name }, 'SQL behind these counts')),
     chartCard(data),
     calendarCard(data),
     rhythmCard(data),
     aiCard(data),
-    pullSizeCard(data),
+    pullSizeCard(data, { repo: name }),
     el('div', { class: 'grid2' }, [
       rankTable('Contributors', data.by_actor, { label: 'person', link: (n) => ['users', n] }),
       issueCard(data),
@@ -1309,7 +1348,7 @@ async function viewDay(day) {
 
   show([
     crumb(day, 'day', nav),
-    tiles(data.totals),
+    tiles(data.totals, null, sqlLink('activity-totals', { from: day, to: day }, 'SQL behind these counts')),
     teamCard,
     aiCard(data),
     el('div', { class: 'grid2' }, [
@@ -1384,8 +1423,8 @@ function wireSearch() {
 
   // `/` focuses search, the shortcut every developer tool has.
   document.addEventListener('keydown', (e) => {
-    if (e.key === '/' && document.activeElement.tagName !== 'INPUT'
-        && document.activeElement.tagName !== 'SELECT') {
+    // TEXTAREA too: CodeMirror types into one, and `/` is a SQL operator.
+    if (e.key === '/' && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
       e.preventDefault();
       input.focus();
     }
@@ -1465,6 +1504,7 @@ const ROUTES = [
   [['issues', '*'], viewIssue],
   [['day'], viewDayPicker],
   [['day', '*'], viewDay],
+  [['sql'], viewSql],
 ];
 
 function resolve(parts) {

@@ -605,7 +605,8 @@ class StaticFileTest(unittest.TestCase):
 
     def test_the_shipped_assets_are_present(self):
         for name in ('index.html', 'explorer.css', 'explorer.js', 'charts.js',
-                     'vendor/chart.umd.min.js'):
+                     'sqlpage.js', 'vendor/chart.umd.min.js',
+                     'vendor/codemirror.js', 'vendor/codemirror.css'):
             self.assertTrue((server.STATIC / name).is_file(), name)
 
     def test_every_script_the_page_asks_for_is_shipped(self):
@@ -617,10 +618,24 @@ class StaticFileTest(unittest.TestCase):
             self.assertTrue((server.STATIC / src).is_file(), src)
             self.assertIn(Path(src).suffix, server.CONTENT_TYPES, src)
 
+    def test_every_stylesheet_the_page_asks_for_is_shipped(self):
+        import re
+        page = (server.STATIC / 'index.html').read_text()
+        sheets = re.findall(r'<link rel="stylesheet" href="/([^"]+)"', page)
+        self.assertIn('vendor/codemirror.css', sheets)
+        for href in sheets:
+            self.assertTrue((server.STATIC / href).is_file(), href)
+
+    def test_the_sql_page_has_a_tab_and_a_route(self):
+        page = (server.STATIC / 'index.html').read_text()
+        self.assertIn('data-tab="sql"', page)
+        self.assertIn("[['sql'], viewSql]", (server.STATIC / 'explorer.js').read_text())
+
     def test_the_chart_library_is_vendored_not_fetched(self):
         """Everything downstream of the sync is offline by contract, so the
         page must not reach a CDN to draw."""
-        for name in ('index.html', 'explorer.js', 'charts.js'):
+        for name in ('index.html', 'explorer.js', 'charts.js', 'sqlpage.js',
+                     'vendor/codemirror.css'):
             source = (server.STATIC / name).read_text()
             self.assertNotIn('src="http', source, name)
             self.assertNotIn('cdn.jsdelivr', source.replace(
@@ -661,7 +676,7 @@ class StaticFileTest(unittest.TestCase):
         Ours only: the vendored bundle is third-party code that renders into a
         canvas, and grepping it would pin someone else's internals.
         """
-        for name in ('explorer.js', 'charts.js'):
+        for name in ('explorer.js', 'charts.js', 'sqlpage.js'):
             self.assertNotIn('innerHTML', (server.STATIC / name).read_text(), name)
 
 

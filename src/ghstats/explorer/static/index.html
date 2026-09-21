@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ghstats explorer</title>
+<link rel="stylesheet" href="/vendor/codemirror.css">
 <link rel="stylesheet" href="/explorer.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%274%27 fill=%27%232a78d6%27/%3E%3C/svg%3E">
 </head>
@@ -68,6 +69,7 @@
     <a href="#/teams" data-tab="teams">Teams</a>
     <a href="#/projects" data-tab="projects">Jira</a>
     <a href="#/day" data-tab="day">Day</a>
+    <a href="#/sql" data-tab="sql">SQL</a>
     <div class="side-note" id="sidenote"></div>
   </nav>
 
@@ -80,7 +82,9 @@
 
 <!-- Vendored, not fetched: everything downstream of the sync is offline. -->
 <script src="/vendor/chart.umd.min.js"></script>
+<script src="/vendor/codemirror.js"></script>
 <script src="/charts.js"></script>
+<script src="/sqlpage.js"></script>
 <script src="/explorer.js"></script>
 </body>
 </html>
