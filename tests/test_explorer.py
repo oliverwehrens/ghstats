@@ -10,8 +10,10 @@ risk and most of the tests:
 - **The event union.** Four kinds share one filter vocabulary; a filter that
   applies to three of them is a silent undercount.
 """
+import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from ghstats.explorer import queries as q
@@ -57,6 +59,25 @@ class WindowTest(unittest.TestCase):
         """A bad --timezone should render UTC, not refuse to start."""
         self.assertEqual(q.window_utc('2026-08-17', '2026-08-17', 'Mars/Olympus'),
                          ('2026-08-17T00:00:00Z', '2026-08-18T00:00:00Z'))
+
+
+class ExplorerZoneDefaultTest(unittest.TestCase):
+    """The explorer groups in the reader's zone unless told otherwise.
+
+    Times shown in UTC on a machine set to Berlin read as an hour or two of
+    activity that never happened at that hour, which is the whole reason the
+    default is not a constant. Resolving the zone itself is covered by
+    `test_localtime`.
+    """
+
+    def test_the_cli_defaults_to_the_resolved_zone(self):
+        with unittest.mock.patch.dict(os.environ, {'TZ': 'Europe/Berlin'}):
+            self.assertEqual(server.parse_arguments([]).timezone, 'Europe/Berlin')
+
+    def test_an_explicit_timezone_still_wins(self):
+        with unittest.mock.patch.dict(os.environ, {'TZ': 'Europe/Berlin'}):
+            args = server.parse_arguments(['--timezone', 'UTC'])
+        self.assertEqual(args.timezone, 'UTC')
 
 
 class FiltersTest(unittest.TestCase):

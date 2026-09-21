@@ -2,7 +2,7 @@
 """Serve the explorer over loopback HTTP.
 
     ghstats-explore                          # http://127.0.0.1:8765
-    ghstats-explore --timezone Europe/Berlin --open
+    ghstats-explore --timezone UTC --open    # override this machine's zone
 
 A routing shell and nothing more: every response body comes from `queries`, so
 the interesting logic is testable without a socket. Three properties are
@@ -43,6 +43,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ghstats.explorer import queries, recipes, schema_docs, sql
+from ghstats.localtime import local_zone_name
 from ghstats.store import sqlite as sqlite_store
 
 DEFAULT_HOST = '127.0.0.1'
@@ -524,8 +525,10 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help=f'Store path (default: {sqlite_store.DEFAULT_DB})')
     parser.add_argument('--org',
                         help='Organization; inferred when the store holds one')
-    parser.add_argument('--timezone', default='UTC',
-                        help='Zone that day and hour grouping use (default UTC)')
+    local_tz = local_zone_name()
+    parser.add_argument('--timezone', default=local_tz,
+                        help='Zone that days, hours and clock times are shown '
+                             f'in (default: this machine\'s, {local_tz})')
     parser.add_argument('--host', default=DEFAULT_HOST,
                         help=f'Bind address (default: {DEFAULT_HOST})')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT,

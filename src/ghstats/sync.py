@@ -923,7 +923,9 @@ def main():
     client = GitHubGraphQL(token, debug=args.debug)
     started = time.monotonic()
 
-    print(f'Syncing {args.org} at {iso(now)}')
+    # Shown in the operator's own zone; `iso(now)` is the wire format the API
+    # wants, not a time anyone reads off a terminal at a glance.
+    print(f'Syncing {args.org} at {now.astimezone():%Y-%m-%d %H:%M:%S %Z}')
     if args.dry_run:
         print('DRY RUN: no files will be written')
 

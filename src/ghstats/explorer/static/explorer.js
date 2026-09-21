@@ -167,13 +167,28 @@ async function apiPost(path, payload, extra) {
 
 /* -- filter controls ---------------------------------------------------- */
 
-function isoDay(d) { return d.toISOString().slice(0, 10); }
+/**
+ * Today as the store's zone spells it, not the browser's.
+ *
+ * The range controls speak local dates, which `window_utc` converts on the
+ * server. Dating them from `toISOString` would spell them in UTC instead: west
+ * of Greenwich after 17:00 the presets would end on tomorrow, and east of it
+ * before 01:00 on yesterday, so the newest day of activity would sit outside
+ * the range that claims to include today.
+ */
+function today() { return localDay(Date.now()); }
+
+/** Calendar arithmetic on a `YYYY-MM-DD`. A day count, in no zone at all. */
+function addDays(day, delta) {
+  const at = new Date(day + 'T00:00:00Z');
+  at.setUTCDate(at.getUTCDate() + delta);
+  return at.toISOString().slice(0, 10);
+}
 
 function applyPreset(days) {
   if (!days) { go(parseHash().parts, { from: null, to: null }); return; }
-  const to = new Date();
-  const from = new Date(to.getTime() - (days - 1) * 86400000);
-  go(parseHash().parts, { from: isoDay(from), to: isoDay(to) });
+  const to = today();
+  go(parseHash().parts, { from: addDays(to, -(days - 1)), to });
 }
 
 function wireFilters() {
@@ -228,7 +243,7 @@ function syncFilterUI() {
   if (!f.from && !f.to) days = 0;
   else if (f.from && f.to) {
     const span = Math.round((Date.parse(f.to) - Date.parse(f.from)) / 86400000) + 1;
-    if (f.to === isoDay(new Date()) && [1, 7, 30, 90].includes(span)) days = span;
+    if (f.to === today() && [1, 7, 30, 90].includes(span)) days = span;
   }
   document.querySelectorAll('.presets button').forEach((button) => {
     button.classList.toggle('on', days !== null && Number(button.dataset.days) === days);
@@ -826,7 +841,11 @@ function eventRow(event, opts) {
   const meta = el('div', { class: 'meta' });
   // The clock only: the date is on the band this row sits under.
   meta.appendChild(el('span', {
-    class: 'when', title: new Date(event.at).toLocaleString(), text: localTime(event.at),
+    class: 'when', text: localTime(event.at),
+    // The hover spells the instant out in the page's zone -- `toLocaleString`
+    // would use the browser's, which need not be the one the day band counted
+    // this row under.
+    title: `${localDay(event.at)} ${localTime(event.at)} ${(META && META.timezone) || 'UTC'}`,
   }));
   if (event.actor) {
     meta.appendChild(el('a', {
@@ -1051,7 +1070,7 @@ async function viewRepo(name) {
     blocks.push(el('div', {
       class: 'count-note',
       text: 'Coverage ' + coverage.map((c) =>
-        `${c.kind} ${c.covered_from.slice(0, 10)}→${c.covered_to.slice(0, 10)}`).join('   '),
+        `${c.kind} ${localDay(c.covered_from)}→${localDay(c.covered_to)}`).join('   '),
     }));
   }
 
@@ -1274,7 +1293,7 @@ async function viewDayPicker() {
   // The newest day the window can answer for beats today, which a store that
   // is behind would open on and show nothing for.
   const start = withData.length ? withData[withData.length - 1].day
-                                : isoDay(new Date());
+                                : today();
 
   const card = el('div', { class: 'card' });
   card.appendChild(el('h2', { text: 'Pick a day' }));
@@ -1334,11 +1353,7 @@ async function viewDay(day) {
     text: 'Someone on two teams counts under both, so these do not sum to the total.',
   }));
 
-  const shift = (delta) => {
-    const d = new Date(day + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() + delta);
-    return isoDay(d);
-  };
+  const shift = (delta) => addDays(day, delta);
   const nav = [
     el('a', { class: 'chip', href: '#', text: '← ' + shift(-1),
               onclick: (e) => { e.preventDefault(); navigate(['day', shift(-1)]); } }),
@@ -1457,8 +1472,8 @@ function renderFreshness() {
   box.classList.add(level);
   box.appendChild(el('span', { class: 'dot' }));
   box.appendChild(el('span', { class: 'txt', text }));
-  box.title = `Store covers ${(META.covered_from || '?').slice(0, 10)} → ` +
-    `${(META.covered_to || '?').slice(0, 10)} · ${META.timezone}`;
+  box.title = `Store covers ${META.covered_from ? localDay(META.covered_from) : '?'} → ` +
+    `${META.covered_to ? localDay(META.covered_to) : '?'} · ${META.timezone}`;
 }
 
 function renderSideNote() {
