@@ -25,6 +25,7 @@ src/ghstats/
     sync.py                the network sweep -- the only caller of GitHub
     reindex.py             rebuild derived tables from stored commits
     analysis.py            activity metrics from client output
+    localtime.py           which zone the tools display and group in
     github/graphql.py      GraphQL client: rate limits, retries, backoff
     store/sqlite.py        the store: repos, coverage, commits, pulls, reviews
     store/json_cache.py    retired per-repo JSON layout, still readable
@@ -123,7 +124,7 @@ tracked file:
 |---|---|---|
 | `GHSTATS_ORG` | — | **Required.** GitHub organization to sync |
 | `GHSTATS_SINCE` | `2025-01-01` | Coverage floor, `YYYY-MM-DD` |
-| `GHSTATS_TZ` | `UTC` | Only used in the `ghstats-explore` line it prints at the end |
+| `GHSTATS_TZ` | this machine's zone | Only used in the `ghstats-explore` line it prints at the end |
 | `GHSTATS_VENV` | — | Virtualenv to activate first, if you use one |
 | `GHSTATS_CONCURRENCY` | `3` | Passed to `ghstats-sync --concurrency` |
 | `GHSTATS_COMMIT_BATCH` | `3` | Passed to `ghstats-sync --commit-batch` |
@@ -241,14 +242,14 @@ Serves an interactive explorer over the store. Offline, read-only, no Python dep
 and no network — the chart library is vendored into the package, not fetched.
 
 ```bash
-ghstats-explore --timezone Europe/Berlin --open
+ghstats-explore --open
 ```
 
 | Option | Meaning |
 |---|---|
 | `--db` | Store path (default `.cache/ghstats.db`) |
 | `--org` | Organization; inferred when the store holds one |
-| `--timezone` | Zone that day and hour grouping use (default `UTC`) |
+| `--timezone` | Zone that days, hours and clock times are shown in (default: this machine's) |
 | `--host` / `--port` | Bind address and port (default `127.0.0.1:8765`) |
 | `--open` | Open a browser once the server is up |
 
@@ -406,6 +407,13 @@ Timestamps are ISO-8601 UTC at whole-second precision, ending in `Z`. SQLite com
 `TEXT` lexically, so a second spelling or a second precision silently breaks every range
 query — `'...43Z' <= '...43.869494+00:00'` is false. `covered_to` is floored, which
 understates coverage rather than overstating it.
+
+UTC is the *storage* format, not the reading format. Anything that turns an instant into
+a day, an hour or a line on a terminal — the explorer's charts and stream, the weekday
+and hour histograms in `analysis.py`, the coverage lines the CLIs print — does so in the
+zone this machine is set to, resolved by `localtime.py` and overridable with
+`ghstats-explore --timezone`. Grouping a Berlin team's evening in UTC reads as real
+activity at an hour nobody worked.
 
 ### The two overlap windows
 

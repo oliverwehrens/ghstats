@@ -89,5 +89,9 @@ if ! ghstats-reindex; then
 fi
 
 echo "==> Done. Explore with:"
-echo "      ghstats-explore --timezone \"${GHSTATS_TZ:-UTC}\" --open"
+if [ -n "${GHSTATS_TZ:-}" ]; then
+    echo "      ghstats-explore --timezone \"$GHSTATS_TZ\" --open"
+else
+    echo "      ghstats-explore --open"
+fi
 [ "$failed" -eq 0 ]

@@ -322,7 +322,9 @@ and eventually should be; during the gate, identical-by-construction beats indep
 
 **Ordering turned out to be part of the contract.** The analyzer only accumulates, so
 within-repo order cannot change a count — but `by_hour` and `by_day_of_week` take their
-*key order* from processing order, and `json.dump` preserves it. The client's `ORDER BY`
+*key order* from processing order, and `json.dump` preserves it. (Those two are now
+bucketed in the machine's zone rather than UTC, which moves counts between keys but not
+between stores — the gate compared both paths under the same zone.) The client's `ORDER BY`
 clauses reproduce how `cache_store` sorted its JSON: commits by `(committed_date, oid)`,
 pulls by `number`, reviews by `(submitted_at, id)`.
 

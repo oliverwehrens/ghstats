@@ -15,8 +15,21 @@ from dateutil import parser as date_parser
 from ghstats.analysis import ActivityAnalyzer
 from ghstats.clients import sqlite as sqlite_client
 from ghstats.clients.sqlite import SqliteClient
+from ghstats.localtime import local_zone_name, zone as _zone
 from ghstats.store import sqlite as sqlite_store
-from ghstats.store.json_cache import iso
+from ghstats.store.json_cache import normalize
+
+
+def shown(dt: datetime) -> str:
+    """An instant as the operator's own clock shows it.
+
+    Coverage bounds are stored and compared in UTC, but they are read off a
+    terminal by someone deciding whether to re-sync, and "covered to 22:00" is
+    a different decision from "covered to midnight". `iso()` stays the wire and
+    storage format; this is only for the eye.
+    """
+    return normalize(dt).astimezone(_zone(local_zone_name())).strftime(
+        '%Y-%m-%d %H:%M:%S %Z')
 
 
 def parse_arguments():
@@ -141,15 +154,15 @@ def main():
               file=sys.stderr)
         sys.exit(2)
     if summary['covered_from'] is None or since < summary['covered_from']:
-        print(f"Error: --since {iso(since)} predates cache coverage "
-              f"{iso(summary['covered_from']) if summary['covered_from'] else 'unknown'}.\n"
+        print(f"Error: --since {shown(since)} predates cache coverage "
+              f"{shown(summary['covered_from']) if summary['covered_from'] else 'unknown'}.\n"
               f"       Marking users inactive on incomplete data would be wrong.\n"
               f"       Run: ghstats-sync --org {args.organization} "
               f"--from {since.date()}", file=sys.stderr)
         sys.exit(2)
     until = min(until, summary['covered_to'])
-    print(f"Cache covers {iso(summary['covered_from'])} to "
-          f"{iso(summary['covered_to'])}")
+    print(f"Cache covers {shown(summary['covered_from'])} to "
+          f"{shown(summary['covered_to'])}")
     print()
 
     client = SqliteClient(conn, args.organization)

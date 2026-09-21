@@ -25,11 +25,7 @@ import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-try:                                     # Python 3.9+
-    from zoneinfo import ZoneInfo
-except ImportError:                      # pragma: no cover - 3.8 fallback
-    ZoneInfo = None                      # type: ignore
-
+from ghstats.localtime import UTC, zone as _zone
 from ghstats.store.sqlite import UNSYNCABLE_REPOS
 
 # The four things that can appear in the stream. A pull request contributes two
@@ -39,27 +35,15 @@ from ghstats.store.sqlite import UNSYNCABLE_REPOS
 # first question wrongly and silently.
 KINDS = ('commit', 'pull', 'merge', 'review')
 
-DEFAULT_TZ = 'UTC'
+DEFAULT_TZ = UTC
 
 # A page of events. Large enough that a quiet week arrives whole, small enough
 # that a busy repository's year does not.
 PAGE = 100
 
 
-# -- timezone plumbing -----------------------------------------------------
-
-def _zone(name: str):
-    """Resolve a timezone name, falling back to UTC rather than failing.
-
-    A bad `--timezone` should not make the explorer refuse to start; it should
-    render UTC and be visibly wrong in the header, which is recoverable.
-    """
-    if not name or ZoneInfo is None:
-        return timezone.utc
-    try:
-        return ZoneInfo(name)
-    except Exception:
-        return timezone.utc
+# Zone resolution lives in `ghstats.localtime`: it is not an explorer concern,
+# because `analysis` buckets by local day too.
 
 
 def register_functions(conn: sqlite3.Connection, tz_name: str = DEFAULT_TZ) -> None:

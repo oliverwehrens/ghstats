@@ -1,7 +1,23 @@
-"""Core activity analysis logic for GitHub user activity."""
+"""Core activity analysis logic for GitHub user activity.
+
+**Instants in UTC, buckets in the reader's zone.** Every timestamp is
+normalized to UTC before it is compared, so windows and ordering are
+unambiguous. Everything that answers "when do these people work" -- the
+weekday histogram, the hour histogram, the contribution calendar -- is
+bucketed in `tz_name` instead, which defaults to this machine's zone.
+
+Those buckets used to be UTC, on the promise that the reporting layer would
+convert them. That layer was the pre-rendered HTML report, and it is gone, so
+the conversion never happened: a Berlin team's 23:30 commit was counted at
+21:30 on the day before. A count cannot be re-zoned after the fact anyway --
+by the time it is a number under `'Tuesday'` the instant that made it is gone
+-- so the bucketing has to happen here, where the instant still exists.
+"""
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
+
+from ghstats.localtime import local_zone_name, zone as _zone
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -24,7 +40,8 @@ def _normalize_datetime(dt: datetime) -> datetime:
 class ActivityAnalyzer:
     """Analyzes GitHub user activity across repositories."""
     
-    def __init__(self, client: Any, quiet: bool = False):
+    def __init__(self, client: Any, quiet: bool = False,
+                 tz_name: Optional[str] = None):
         """Initialize analyzer with an activity source.
 
         Args:
@@ -32,9 +49,19 @@ class ActivityAnalyzer:
             quiet: Suppress per-repository progress. Essential for batch runs:
                 one line per repo per user runs to hundreds of thousands of
                 lines on a large organization.
+            tz_name: IANA zone the weekday, hour and date buckets are counted
+                in. Defaults to this machine's zone; an unknown name falls back
+                to UTC rather than raising, and `metrics['timezone']` reports
+                whichever one is in force.
         """
         self.client = client
         self.quiet = quiet
+        self.tz_name = tz_name or local_zone_name()
+        self.zone = _zone(self.tz_name)
+
+    def _local(self, moment: datetime) -> datetime:
+        """The instant as the reader's wall clock shows it."""
+        return _normalize_datetime(moment).astimezone(self.zone)
     
     def analyze_user_activity(
         self,
@@ -76,6 +103,7 @@ class ActivityAnalyzer:
                 'since': since.isoformat(),
                 'until': until.isoformat()
             },
+            'timezone': self.tz_name,
             'repositories_analyzed': len(repos),
             'commits': {
                 'total': 0,
@@ -293,16 +321,15 @@ class ActivityAnalyzer:
             repo_metrics['commits']['lines_added'] += additions
             repo_metrics['commits']['lines_removed'] += deletions
             
-            # Track timing for commits - always store in UTC
-            commit_date_utc = _normalize_datetime(commit.date)
-            # Store UTC-based day/hour (will be converted to user timezone during reporting)
-            day_of_week = commit_date_utc.strftime('%A')  # Monday, Tuesday, etc. (UTC)
-            hour = commit_date_utc.hour  # UTC hour
+            # Timing buckets are the reader's wall clock, not UTC.
+            commit_local = self._local(commit.date)
+            day_of_week = commit_local.strftime('%A')  # Monday, Tuesday, etc.
+            hour = commit_local.hour
             repo_metrics['commits']['by_day_of_week'][day_of_week] += 1
             repo_metrics['commits']['by_hour'][hour] += 1
             
             # Track activity by date for contribution calendar
-            activity_date = commit_date_utc.strftime('%Y-%m-%d')
+            activity_date = commit_local.strftime('%Y-%m-%d')
             repo_metrics['activity_by_date'][activity_date] += 1
         
         repo_metrics['commits']['lines_net'] = (
@@ -318,15 +345,14 @@ class ActivityAnalyzer:
         since_utc = _normalize_datetime(since)
         until_utc = _normalize_datetime(until)
         for pr in created_prs:
-            pr_created_utc = _normalize_datetime(pr.created_at)
-            # Store UTC-based day/hour (will be converted to user timezone during reporting)
-            day_of_week = pr_created_utc.strftime('%A')  # UTC
-            hour = pr_created_utc.hour  # UTC hour
+            pr_created_local = self._local(pr.created_at)
+            day_of_week = pr_created_local.strftime('%A')
+            hour = pr_created_local.hour
             repo_metrics['pull_requests']['created_by_day_of_week'][day_of_week] += 1
             repo_metrics['pull_requests']['created_by_hour'][hour] += 1
             
             # Track activity by date for contribution calendar
-            activity_date = pr_created_utc.strftime('%Y-%m-%d')
+            activity_date = pr_created_local.strftime('%Y-%m-%d')
             repo_metrics['activity_by_date'][activity_date] += 1
             
             if pr.merged and pr.merged_at:
@@ -357,12 +383,10 @@ class ActivityAnalyzer:
             elif state == 'commented':
                 repo_metrics['reviews']['comments'] += 1
             
-            # Track timing for reviews - always store in UTC
             if review.submitted_at:
-                review_date_utc = _normalize_datetime(review.submitted_at)
-                # Store UTC-based day/hour (will be converted to user timezone during reporting)
-                day_of_week = review_date_utc.strftime('%A')  # UTC
-                hour = review_date_utc.hour  # UTC hour
+                review_local = self._local(review.submitted_at)
+                day_of_week = review_local.strftime('%A')
+                hour = review_local.hour
                 
                 # Reviews timing - count every review submission
                 repo_metrics['reviews']['by_day_of_week'][day_of_week] += 1
@@ -387,7 +411,7 @@ class ActivityAnalyzer:
                     repo_metrics['pull_requests']['reviewed_by_hour'][hour] += 1
                 
                 # Track activity by date for contribution calendar
-                activity_date = review_date_utc.strftime('%Y-%m-%d')
+                activity_date = review_local.strftime('%Y-%m-%d')
                 repo_metrics['activity_by_date'][activity_date] += 1
         
         return repo_metrics

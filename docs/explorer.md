@@ -13,7 +13,8 @@ histograms, one file per person, generated ahead of time. That report is gone;
 the reasoning for serving instead of generating is below.
 
 ```bash
-ghstats-explore --timezone Europe/Berlin --open
+ghstats-explore --open                      # this machine's zone
+ghstats-explore --timezone UTC --open       # or any other
 ```
 
 ## Why it is served, not generated
@@ -98,6 +99,14 @@ The store holds UTC at whole-second precision. "What changed on Tuesday" is a
 question about a *local* day, so a window arrives as local dates and is converted
 to a half-open UTC instant range before it reaches SQL (`window_utc`) — which
 keeps the comparison on the indexed columns.
+
+Which local day is `--timezone`, and it defaults to the zone this machine is set
+to (`TZ`, then `/etc/localtime`, then `/etc/timezone`; UTC if none of them names
+a zone `zoneinfo` knows). One zone drives the whole page: the day bands and clock
+times in the stream, the day and hour histograms, the range the date filter
+means, and `:tz` on the SQL page. The header states which zone is in force, so a
+page grouped in UTC says so rather than looking like local time that is off by an
+hour.
 
 Grouping for the charts uses `local_date` / `local_hour` / `local_dow`, Python
 functions registered per connection. They defer to `zoneinfo` per row rather than
