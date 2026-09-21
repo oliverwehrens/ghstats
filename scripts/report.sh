@@ -71,6 +71,7 @@ if [ "$SKIP_SYNC" -eq 0 ]; then
     echo "==> Syncing $ORG (network)"
     if ! ghstats-sync --org "$ORG" --from "$SINCE" \
             --commit-batch "${GHSTATS_COMMIT_BATCH:-3}" \
+            --pull-batch "${GHSTATS_PULL_BATCH:-2}" \
             --concurrency "${GHSTATS_CONCURRENCY:-3}"; then
         echo "WARNING: sync reported repository failures; continuing with the" \
              "store as it stands. Those repos keep their old watermark." >&2

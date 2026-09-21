@@ -565,8 +565,12 @@ class Syncer:
             variables,
             label=f'commits[{len(repos)}]',
             # A multi-repo batch has splitting as its recovery path, which beats
-            # retrying an oversized query that will time out again.
-            max_retries=1 if len(repos) > 1 else None,
+            # retrying an oversized query that will time out again. Zero, not
+            # one: the timeout is deterministic in the query's size, so the
+            # retry only spends another `timeout` seconds of server CPU before
+            # splitting anyway -- and that spend is what trips the secondary
+            # rate limiter.
+            max_retries=0 if len(repos) > 1 else None,
         )
 
         for index, repo in enumerate(repos):
@@ -702,7 +706,8 @@ class Syncer:
 
         data = self.client.query(
             self._pull_query(len(repos)), variables, label=f'pulls[{len(repos)}]',
-            max_retries=1 if len(repos) > 1 else None,
+            # Zero for a batch: see the note in `sync_commits`.
+            max_retries=0 if len(repos) > 1 else None,
         )
 
         page_query = self._pull_page_query()
