@@ -321,6 +321,47 @@ th {
   text-transform: uppercase; letter-spacing: .05em; color: var(--ink-muted);
   padding: 5px 9px 5px 0; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
+
+/* A sortable header is a button wearing the header's own type: the click
+   target has to be the whole label, and the label is already the right size. */
+th > button.sort {
+  font: inherit; text-transform: inherit; letter-spacing: inherit;
+  color: inherit; background: none; border: 0; padding: 0; margin: 0;
+  cursor: pointer; display: inline-flex; align-items: baseline; gap: 4px;
+}
+th.num > button.sort { flex-direction: row-reverse; }
+th > button.sort:hover { color: var(--ink); }
+th > button.sort:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+/* A header that carries an explanation says so: the dotted rule is the
+   conventional "hover me" mark, and it has to be visible without being loud
+   enough to compete with the numbers under it. */
+th[title] { cursor: help; }
+th[title] > button.sort {
+  cursor: pointer;
+  text-decoration: underline dotted var(--baseline);
+  text-underline-offset: 3px;
+}
+th[title] > button.sort:hover { text-decoration-color: var(--ink-muted); }
+
+/* The arrow holds its width whether or not it is showing, so switching
+   columns does not shift the header row sideways. */
+.sort-ind { width: 7px; font-size: 9px; opacity: 0; }
+th[aria-sort="ascending"] .sort-ind::before { content: '\25B2'; }
+th[aria-sort="descending"] .sort-ind::before { content: '\25BC'; }
+th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--ink); }
+th[aria-sort="ascending"] .sort-ind, th[aria-sort="descending"] .sort-ind { opacity: 1; }
+
+/* -- section jumps ------------------------------------------------------- */
+
+.jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.jump-link {
+  font-size: 11.5px; color: var(--ink-2); text-decoration: none;
+  border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px;
+  background: var(--surface-1); white-space: nowrap;
+}
+.jump-link:hover { color: var(--ink); border-color: var(--s1); }
+/* Cleared by the two sticky bars the page scrolls under. */
+.card[id] { scroll-margin-top: 112px; }
 td { padding: 6px 9px 6px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
 tbody tr:hover { background: color-mix(in oklab, var(--s1) 5%, transparent); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }

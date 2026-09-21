@@ -419,6 +419,166 @@ function calendarCard(bundle) {
   return card;
 }
 
+/* -- sortable tables, section jumps -------------------------------------- */
+
+/**
+ * A column header, with the sentence that says what the number under it is.
+ *
+ * Every column on this page is a choice -- which date a pull request is
+ * counted on, whether an approval is a comment, what the denominator of a
+ * percentage is -- and a reader who guesses wrong reads the table backwards.
+ * The guess is cheaper to prevent than to correct, so the definition hangs off
+ * the header rather than living in a legend nobody scrolls to.
+ */
+function headCell(label, help, numeric) {
+  return el('th', { class: numeric ? 'num' : null, text: label, title: help || null });
+}
+
+
+/**
+ * What a cell is worth when a column is sorted.
+ *
+ * Cells are formatted for reading, not for comparing: thousands separators, a
+ * percent sign, a minus that is U+2212, and an en dash where a measurement is
+ * missing. Anything that survives stripping those is a number; anything else
+ * sorts as text. A cell that carries `data-sort` overrides the rendering
+ * entirely, which is how a two-part cell like "+120 −34" gets one key.
+ *
+ * Missing values return null and are pinned to the bottom in both directions —
+ * an un-backfilled repository is unknown, not the smallest.
+ */
+function cellValue(cell) {
+  const raw = cell.dataset ? cell.dataset.sort : undefined;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : raw.toLowerCase();
+  }
+  const text = cell.textContent.trim();
+  if (!text || text === '\u2013' || text === '-') return null;
+  const n = Number(text.replace(/\u2212/g, '-').replace(/[,\s%+]/g, ''));
+  return Number.isFinite(n) ? n : text.toLowerCase();
+}
+
+/**
+ * Make every header in a table sort the rows under it.
+ *
+ * The first click on a column of numbers sorts descending, because the
+ * question behind a numeric column is almost always "which are the biggest";
+ * a column of names starts ascending. Clicking the same header again reverses
+ * it. Ties keep the order the server sent, so the rank a table arrived in
+ * still shows through a sort on a column full of equal values.
+ */
+function sortableTable(table) {
+  const head = table.querySelector('thead tr');
+  if (!head || !table.querySelector('tbody')) return table;
+
+  const headers = [].slice.call(head.children);
+  headers.forEach((th, index) => {
+    const button = el('button', { type: 'button', class: 'sort' });
+    while (th.firstChild) button.appendChild(th.firstChild);
+    button.appendChild(el('span', { class: 'sort-ind', 'aria-hidden': 'true' }));
+    th.appendChild(button);
+    th.setAttribute('aria-sort', 'none');
+    button.addEventListener('click', () => {
+      const now = th.getAttribute('aria-sort');
+      const dir = now === 'none'
+        ? (th.classList.contains('num') ? 'desc' : 'asc')
+        : (now === 'ascending' ? 'desc' : 'asc');
+      sortBy(table, headers, index, dir);
+    });
+  });
+  return table;
+}
+
+function sortBy(table, headers, index, dir) {
+  const body = table.querySelector('tbody');
+  const rows = [].slice.call(body.rows).map((tr, i) => ({
+    tr, i, key: tr.cells[index] ? cellValue(tr.cells[index]) : null,
+  }));
+
+  rows.sort((a, b) => {
+    if (a.key === null || b.key === null) {
+      if (a.key === b.key) return a.i - b.i;
+      return a.key === null ? 1 : -1;
+    }
+    const cmp = (typeof a.key === 'number' && typeof b.key === 'number')
+      ? a.key - b.key
+      : String(a.key).localeCompare(String(b.key), undefined, { numeric: true });
+    return (dir === 'asc' ? cmp : -cmp) || a.i - b.i;
+  });
+
+  rows.forEach((row) => body.appendChild(row.tr));
+  headers.forEach((th, i) => th.setAttribute(
+    'aria-sort', i === index ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'));
+}
+
+/** Every table inside a block, made sortable. */
+function sortableTables(node) {
+  [].slice.call(node.querySelectorAll('table')).forEach(sortableTable);
+  return node;
+}
+
+/** A heading's text without the SQL link that sits on the same line. */
+function headingText(heading) {
+  const copy = heading.cloneNode(true);
+  [].slice.call(copy.querySelectorAll('.sql-link')).forEach((n) => n.remove());
+  return copy.textContent.trim();
+}
+
+/**
+ * Jump links for the cards below, built from the cards themselves.
+ *
+ * The links scroll rather than set `location.hash`: the hash is the router
+ * here, and an `href="#pr-size"` would navigate away from the page it is
+ * trying to move within.
+ */
+function sectionNav(cards) {
+  const links = [];
+  cards.forEach((card, i) => {
+    if (!card) return;
+    const heading = card.querySelector(':scope > h2');
+    if (!heading) return;
+    const title = headingText(heading);
+    if (!title) return;
+    const id = 'sec-' + (title.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '') || String(i));
+    card.id = id;
+    links.push(el('a', {
+      class: 'jump-link', href: '#', text: title,
+      onclick: (e) => {
+        e.preventDefault();
+        const target = document.getElementById(id);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      },
+    }));
+  });
+  if (links.length < 2) return null;
+  return el('nav', { class: 'jump', 'aria-label': 'Sections on this page' }, links);
+}
+
+/**
+ * The five counts every ranking table carries, and what each one means.
+ *
+ * All five are scoped by the filter row: a kind whose checkbox is off
+ * contributes no rows at all, so its column reads zero rather than being
+ * hidden -- which the tooltips say, because a column of zeroes otherwise looks
+ * like a finding.
+ */
+const RANK_COLUMNS = [
+  ['commits', 'Commits whose commit date falls inside the window. Unticking '
+    + '"commits" in the filter row empties this column.'],
+  ['PRs', 'Pull requests opened inside the window, counted on the day they '
+    + 'were opened.'],
+  ['merged', 'Pull requests merged inside the window, counted on the merge '
+    + 'date and credited to whoever opened them \u2014 not to whoever pressed '
+    + 'merge.'],
+  ['reviews', 'Reviews submitted inside the window: approvals, change '
+    + 'requests and comment-only reviews alike.'],
+  ['+/\u2212', 'Lines added and removed by the commits counted here. Pull '
+    + 'requests and reviews add nothing to it. Sorts on the two added '
+    + 'together, the total churn.'],
+];
+
 function rankTable(title, rows, opts) {
   const options = opts || {};
   const card = el('div', { class: 'card' });
@@ -428,9 +588,10 @@ function rankTable(title, rows, opts) {
     return card;
   }
   const table = el('table');
-  const head = el('tr', null, [el('th', { text: options.label || 'name' })]);
-  ['commits', 'PRs', 'merged', 'reviews', '+/−'].forEach((h) =>
-    head.appendChild(el('th', { class: 'num', text: h })));
+  const what = options.label || 'name';
+  const head = el('tr', null, [headCell(what, options.help
+    || (options.link ? `Click through for this ${what}'s own page.` : null))]);
+  RANK_COLUMNS.forEach(([label, help]) => head.appendChild(headCell(label, help, true)));
   table.appendChild(el('thead', null, [head]));
 
   const body = el('tbody');
@@ -448,7 +609,9 @@ function rankTable(title, rows, opts) {
     const tr = el('tr', null, [cell]);
     [row.commits, row.pulls, row.merges, row.reviews].forEach((v) =>
       tr.appendChild(el('td', { class: 'num', text: num(v || 0) })));
-    tr.appendChild(el('td', { class: 'num' }, [
+    tr.appendChild(el('td', {
+      class: 'num', 'data-sort': (row.added || 0) + (row.removed || 0),
+    }, [
       el('span', { class: 'diff' }, [
         el('span', { class: 'add', text: '+' + num(row.added || 0) }), ' ',
         el('span', { class: 'del', text: '−' + num(row.removed || 0) }),
@@ -551,13 +714,34 @@ function pullSizeCard(bundle, entity) {
 
 /** The trend as numbers. Oldest first, to read left-to-right like the chart. */
 function pullBucketTable(data) {
+  const weekly = data.granularity === 'week';
   const table = el('table');
-  const head = el('tr', null, [
-    el('th', { text: data.granularity === 'week' ? 'week of' : 'month' }),
-  ]);
-  ['PRs', 'merged', 'median lines', 'median comments', 'comments',
-   'per 100 lines', 'no comment'].forEach((h) =>
-    head.appendChild(el('th', { class: 'num', text: h })));
+  const head = el('tr', null, [headCell(
+    weekly ? 'week of' : 'month',
+    weekly
+      ? 'The Monday the week starts on. A pull request falls in the week it '
+        + 'was opened, in your timezone.'
+      : 'The month a pull request was opened in, in your timezone. Windows '
+        + 'longer than four months bucket by month rather than by week.')]);
+  [
+    ['PRs', 'Measured pull requests opened in this bucket. Unmeasured ones '
+      + 'are left out of the whole row.'],
+    ['merged', 'How many of them have been merged since \u2014 at any time, '
+      + 'not necessarily inside this bucket.'],
+    ['median lines', 'Median of added plus removed lines. A median, not a '
+      + 'mean, so one enormous refactor does not drag the bucket up.'],
+    ['median comments', 'Median comments per pull request: conversation '
+      + 'comments, inline review comments, and reviews that carried a '
+      + 'message. An empty approval is not a comment.'],
+    ['comments', 'Every comment on this bucket\u2019s pull requests, added up '
+      + 'rather than averaged.'],
+    ['per 100 lines', 'Comments divided by lines changed, over the bucket as '
+      + 'a whole. Not an average of per-PR ratios: a one-line PR with two '
+      + 'comments would otherwise count as 200 and swamp the bucket.'],
+    ['no comment', 'How many of the bucket\u2019s pull requests drew no '
+      + 'comment at all. A count, not a share \u2014 the per-repository table '
+      + 'below shows the share.'],
+  ].forEach(([label, help]) => head.appendChild(headCell(label, help, true)));
   table.appendChild(el('thead', null, [head]));
 
   const body = el('tbody');
@@ -998,15 +1182,20 @@ function reviewCard(data) {
  */
 async function viewRepos() {
   const data = await api('repos');
-  show([
-    crumb('Repositories', 'entry point'),
-    el('div', { class: 'count-note', text: `${data.repos.length} with activity in this window` }),
+  const cards = [
     rankTable('Repositories', data.repos, {
       label: 'repository', key: 'repo', link: (name) => ['repos', name],
+      help: 'The repository, as GitHub names it. Only repositories with '
+          + 'activity in the window are listed. Click through for its own page.',
     }),
     pullSizeCard(data),
     pullRepoTable(data.pulls),
-  ]);
+  ].filter(Boolean).map(sortableTables);
+  show([
+    crumb('Repositories', 'entry point'),
+    sectionNav(cards),
+    el('div', { class: 'count-note', text: `${data.repos.length} with activity in this window` }),
+  ].concat(cards));
 }
 
 /**
@@ -1023,10 +1212,29 @@ function pullRepoTable(data) {
                                    sqlLink('pr-size-by-repo')]));
 
   const table = el('table');
-  const head = el('tr', null, [el('th', { text: 'repository' })]);
-  ['PRs', 'measured', 'merged', 'median lines', 'median comments',
-   'per 100 lines', 'no comment'].forEach((h) =>
-    head.appendChild(el('th', { class: 'num', text: h })));
+  const head = el('tr', null, [headCell('repository',
+    'The repository, as GitHub names it. Click through for its own page.')]);
+  [
+    ['PRs', 'Every pull request opened here inside the window, measured or '
+      + 'not. This is the denominator; the columns after "measured" are not '
+      + 'over it.'],
+    ['measured', 'How many of them ghstats-backfill-pulls has sized. '
+      + 'Everything to the right is over these only, so a repository with a '
+      + 'low count here is a small sample, not a quiet one.'],
+    ['merged', 'How many of the measured pull requests have been merged '
+      + 'since \u2014 at any time, not necessarily inside the window.'],
+    ['median lines', 'Median of added plus removed lines across the measured '
+      + 'pull requests. A median, not a mean, so one enormous refactor does '
+      + 'not speak for the repository.'],
+    ['median comments', 'Median comments per pull request: conversation '
+      + 'comments, inline review comments, and reviews that carried a '
+      + 'message. An empty approval is not a comment.'],
+    ['per 100 lines', 'Comments divided by lines changed, over the '
+      + 'repository as a whole. The column to compare repositories on: a big '
+      + 'repository and a small one can be read against each other here.'],
+    ['no comment', 'The share of measured pull requests that drew no comment '
+      + 'at all \u2014 merged without anyone writing anything.'],
+  ].forEach(([label, help]) => head.appendChild(headCell(label, help, true)));
   table.appendChild(el('thead', null, [head]));
 
   const body = el('tbody');
