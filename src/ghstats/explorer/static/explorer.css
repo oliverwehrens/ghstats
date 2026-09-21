@@ -19,6 +19,7 @@
   --baseline:  #c3c2b7;
   --border:    rgba(11, 11, 11, .10);
   --good:      #006300;
+  --danger:    #b3211f;      /* a failing gate; the counterpart to --good */
 
   --s1: #2a78d6;             /* commit  */
   --s2: #eb6834;             /* pull    */
@@ -42,6 +43,7 @@
     --baseline:  #383835;
     --border:    rgba(255, 255, 255, .10);
     --good:      #0ca30c;
+    --danger:    #e34948;
     --s1: #3987e5;
     --s2: #d95926;
     --s3: #199e70;
@@ -229,8 +231,11 @@ main { flex: 1; min-width: 0; padding: 16px 18px 60px 8px; }
 .tile { background: var(--surface-1); padding: 12px 14px; }
 .tile .n { font-size: 22px; font-weight: 640; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .tile .l { font-size: 11.5px; color: var(--ink-muted); margin-top: 1px; }
-.tile.pos .n { color: var(--good); }
-.tile.neg .n { color: #e34948; }
+.tile .s {
+  font-family: var(--mono); font-size: 11px; margin-top: 4px; white-space: nowrap;
+}
+.tile .s .add { color: var(--good); }
+.tile .s .del { color: #e34948; }
 
 /* The Day entry point's picker: a date field and the button that opens it.
    The button exists because a date input reports no change when the day picked
@@ -368,6 +373,16 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.num { color: var(--ink-2); }
 td.num .diff { white-space: nowrap; }
 
+/* The bar is 54px whatever the number is, so the split reads as a proportion
+   across rows rather than as a second length to compare. It sits under the
+   digits at the right edge, out of the way of the column's own alignment. */
+td.lines .ratio {
+  display: flex; width: 54px; height: 3px; margin: 3px 0 0 auto;
+  border-radius: 2px; overflow: hidden; background: var(--grid);
+}
+td.lines .ratio .add { background: var(--good); }
+td.lines .ratio .del { background: #e34948; }
+
 /* The date controls do not apply to a single-day view: the day is in the path. */
 .filters.day-pinned .presets, .filters.day-pinned .dates { opacity: .4; pointer-events: none; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -441,6 +456,49 @@ td.num .diff { white-space: nowrap; }
 }
 .chip.ai { border-color: color-mix(in oklab, var(--s4) 55%, var(--border)); }
 .chip.issue:hover { border-color: var(--s1); color: var(--s1); text-decoration: none; }
+
+/* -- SonarCloud --------------------------------------------------------- */
+
+/* The label carries the verdict and the colour reinforces it, never the other
+ * way round: a cell that was only red or green would say nothing at all to a
+ * reader who cannot separate the two. The tint is deliberately weak, because
+ * a table of thirty passing repositories should not be a wall of green. */
+.sonar {
+  display: inline-block; padding: 1px 7px; border-radius: 20px;
+  border: 1px solid var(--border); font-size: 10.5px;
+  font-family: var(--mono); color: var(--ink-2); white-space: nowrap;
+}
+.sonar:hover { text-decoration: none; filter: brightness(1.06); }
+.sonar.ok {
+  color: var(--good);
+  border-color: color-mix(in oklab, var(--good) 45%, var(--border));
+  background: color-mix(in oklab, var(--good) 7%, transparent);
+}
+.sonar.bad {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+}
+.sonar.warn {
+  color: var(--s4);
+  border-color: color-mix(in oklab, var(--s4) 50%, var(--border));
+  background: color-mix(in oklab, var(--s4) 8%, transparent);
+}
+/* A project that exists but has never produced a gate result. Styled as an
+ * absence rather than a verdict, which is what it is. */
+.sonar.none { color: var(--ink-muted); }
+
+/* A team's grant on a repository. Quiet by default -- most rows have one and
+ * a table of loud badges says nothing. The absence is what stands out. */
+.grant {
+  font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+  white-space: nowrap;
+}
+.grant.none { color: var(--ink-muted); font-style: italic; }
+
+.sonar-when { color: var(--ink-2); font-family: var(--mono); font-size: 11px; }
+.sonar-when:hover { color: var(--s1); }
+.sonar-key { font-family: var(--mono); color: var(--ink-muted); }
 
 .more {
   margin-top: 12px; padding: 7px 13px; border: 1px solid var(--border);

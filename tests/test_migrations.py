@@ -50,6 +50,19 @@ class MigrationLadderTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def _make_v5(self):
+        """A version-5 store: everything up to `pull_metrics`, no Sonar tables."""
+        conn = sqlite3.connect(self.path)
+        conn.executescript(V3_TABLES + sqlite_store.V4_TABLES
+                           + sqlite_store.V5_TABLES)
+        conn.execute("INSERT INTO repos (org, name) VALUES ('acme', 'thing')")
+        conn.execute(
+            "INSERT INTO commits (repo_id, oid, committed_date, message) "
+            "VALUES (1, 'abc', '2025-01-01T00:00:00Z', 'first')")
+        conn.execute('PRAGMA user_version = 5')
+        conn.commit()
+        conn.close()
+
     def _make_v3(self):
         """Write a store that looks like version 3, with a row in it."""
         conn = sqlite3.connect(self.path)
@@ -132,6 +145,35 @@ class MigrationLadderTest(unittest.TestCase):
         self.addCleanup(fresh.close)
         self.assertEqual(schema_of(fresh), schema_of(migrated))
 
+    def test_adds_the_v6_tables_to_a_v5_store(self):
+        """The step the Repositories page's quality gate columns depend on."""
+        self._make_v5()
+        conn = connect(self.path, create=False)
+        self.addCleanup(conn.close)
+        self.assertEqual(
+            conn.execute('PRAGMA user_version').fetchone()[0],
+            sqlite_store.SCHEMA_VERSION)
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.assertIn('sonar_projects', names)
+        self.assertIn('sonar_runs', names)
+        # The commit history it already held is untouched, and no Sonar run is
+        # invented -- an empty `sonar_runs` is what tells the explorer that
+        # nobody has asked Sonar yet.
+        self.assertEqual(
+            conn.execute('SELECT COUNT(*) FROM commits').fetchone()[0], 1)
+        self.assertEqual(
+            conn.execute('SELECT COUNT(*) FROM sonar_runs').fetchone()[0], 0)
+
+    def test_a_v5_store_migrates_to_the_same_schema_as_a_fresh_one(self):
+        """Same drift alarm as the v3 and v4 cases, one more rung up."""
+        self._make_v5()
+        migrated = connect(self.path, create=False)
+        self.addCleanup(migrated.close)
+        fresh = connect(str(Path(self.dir.name) / 'new6.db'))
+        self.addCleanup(fresh.close)
+        self.assertEqual(schema_of(fresh), schema_of(migrated))
+
     def test_refuses_a_store_from_newer_code(self):
         """A forward version is not migratable and must not be guessed at."""
         self._make_v3()
@@ -163,7 +205,7 @@ class MigrationLadderTest(unittest.TestCase):
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         self.addCleanup(conn.close)
-        self.assertEqual(migrate(conn, 3), [4, 5])
+        self.assertEqual(migrate(conn, 3), [4, 5, 6])
 
 
 class TeamRepoKeyTest(unittest.TestCase):

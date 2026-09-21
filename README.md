@@ -3,20 +3,27 @@
 Collects GitHub activity across an organization — commits, pull requests, reviews and
 lines changed — into a permanent local store, and serves an interactive explorer over it.
 
-Work happens in two phases that never overlap:
+Work happens in phases that never overlap:
 
 ```
 ghstats-sync      network   →  .cache/ghstats.db      incremental, permanent
 ghstats-reindex   offline   →  derived tables         trailers, identities, issues, bots
+ghstats-sonar     network   →  quality gates          optional; SonarCloud, seconds
 ghstats-explore   offline   →  http://127.0.0.1:8765  interactive, read-only
 ```
 
-`ghstats-sync` is the only thing that talks to GitHub. Everything downstream is a pure
-function of whatever the last sync wrote, so asking it anything costs nothing.
+`ghstats-sync` is the only thing that talks to GitHub, and `ghstats-sonar` the only thing
+that talks to SonarCloud. **The explorer does no I/O at all** — it is a pure function of
+whatever the syncs wrote, so asking it anything costs nothing.
+
+The two network phases are separate commands because they cost wildly different things: a
+commit sweep is minutes and real API budget, a Sonar sweep is seconds and under ten
+requests. Refreshing a quality gate should not mean re-sweeping GitHub.
 
 See [docs/incremental-cache.md](docs/incremental-cache.md) for why the sync is incremental,
-[docs/sqlite-store.md](docs/sqlite-store.md) for why the store is SQLite, and
-[docs/explorer.md](docs/explorer.md) for the explorer.
+[docs/sqlite-store.md](docs/sqlite-store.md) for why the store is SQLite,
+[docs/explorer.md](docs/explorer.md) for the explorer, and
+[docs/sonar.md](docs/sonar.md) for the SonarCloud columns.
 
 ## Layout
 
@@ -27,6 +34,10 @@ src/ghstats/
     analysis.py            activity metrics from client output
     localtime.py           which zone the tools display and group in
     github/graphql.py      GraphQL client: rate limits, retries, backoff
+    sonar/sync.py          the SonarCloud sweep         (ghstats-sonar)
+    sonar/rest.py          SonarCloud client: two endpoints, small on purpose
+    sonar/match.py         which Sonar project belongs to which repository
+    sonar/overrides.py     the gitignored repo -> project map, read at runtime
     store/sqlite.py        the store: repos, coverage, commits, pulls, reviews
     store/json_cache.py    retired per-repo JSON layout, still readable
     clients/sqlite.py      read-only view over the store
@@ -37,7 +48,7 @@ src/ghstats/
     tools/                 inactivity report, PR backfill, migration, verification
 tests/                     unittest suite, no network
 docs/                      design notes
-scripts/report.sh          sync then reindex -- the whole pipeline
+scripts/report.sh          sync, reindex, sonar -- the whole pipeline
 ```
 
 ## Requirements
@@ -53,7 +64,7 @@ Two third-party libraries are needed, both installed for you by the step below:
 
 | Library | Why |
 |---|---|
-| `requests` | the GraphQL calls in `ghstats-sync` |
+| `requests` | the GraphQL calls in `ghstats-sync`, and the REST calls in `ghstats-sonar` |
 | `python-dateutil` | parsing and shifting the timestamps everything downstream compares |
 
 The explorer adds nothing to that list: it serves itself from the standard library's
@@ -83,7 +94,7 @@ Check it took:
 
 ```bash
 ghstats-sync --help                     # the console scripts are on PATH
-python -m unittest discover -s tests    # 317 tests, no network, no token
+python -m unittest discover -s tests    # 398 tests, no network, no token
 ```
 
 Every new shell needs `source .venv/bin/activate` again. `report.sh` can do it for you:
@@ -100,22 +111,27 @@ uv pip install -e '.[dev]'
 
 </details>
 
-A token is needed for `ghstats-sync` only. It is read from `--token`, then `GITHUB_TOKEN`, then
-`gh auth token`. Required scopes: `repo` (private repositories) and `read:org`.
+A GitHub token is needed for `ghstats-sync` only. It is read from `--token`, then
+`GITHUB_TOKEN`, then `gh auth token`. Required scopes: `repo` (private repositories) and
+`read:org`.
+
+`ghstats-sonar` is optional and needs its own credentials — a SonarCloud user token in
+`--sonar-token` or `SONAR_TOKEN`, and your organization key in `--sonar-org` or `SONAR_ORG`.
+Nothing else in the tool requires them, and everything else works without them.
 
 ## Quick start
 
 ```bash
 export GHSTATS_ORG=my-org           # required; the rest have defaults
-./scripts/report.sh                 # sync, then rebuild the derived tables
+./scripts/report.sh                 # sync, reindex, and Sonar if configured
 ./scripts/report.sh --skip-sync     # reindex only, no network
 
 ghstats-explore --open              # read the results
 ```
 
-`report.sh` is the nightly job: it syncs, then reindexes, and that is all. There is
-nothing to render, because the explorer queries the store directly. It works from any
-directory -- it anchors itself to the project root.
+`report.sh` is the nightly job: it syncs, reindexes, and reads SonarCloud if it is
+configured. There is nothing to render, because the explorer queries the store directly.
+It works from any directory -- it anchors itself to the project root.
 
 It is configured entirely by environment variable, so retargeting it needs no edit to a
 tracked file:
@@ -128,13 +144,20 @@ tracked file:
 | `GHSTATS_VENV` | — | Virtualenv to activate first, if you use one |
 | `GHSTATS_CONCURRENCY` | `3` | Passed to `ghstats-sync --concurrency` |
 | `GHSTATS_COMMIT_BATCH` | `3` | Passed to `ghstats-sync --commit-batch` |
+| `SONAR_ORG` | — | SonarCloud organization key. Unset skips the Sonar step |
+| `SONAR_TOKEN` | — | SonarCloud user token. Unset skips the Sonar step |
 
 The script checks that `ghstats-sync` and `ghstats-reindex` are on `PATH` before it
 starts, rather than failing after a long network sweep.
 
+The SonarCloud step is **skipped, not required**, when `SONAR_ORG` and `SONAR_TOKEN` are
+absent: an organization that does not use SonarCloud must still get a working report, and
+an existing cron must not break the day this was added. A Sonar step that fails prints a
+warning and leaves the previous snapshot; it never fails the pipeline.
+
 ## Configuring for your organization
 
-Nothing organization-specific is baked into the code. Four things are worth setting up,
+Nothing organization-specific is baked into the code. Five things are worth setting up,
 and only the first is needed to get a report at all.
 
 **1. The organization itself.** `GHSTATS_ORG` for `report.sh`, or `--org` on each command.
@@ -166,6 +189,13 @@ above the list.
 **4. Repositories that cannot be fetched.** `UNSYNCABLE_REPOS` ships empty. If a repository
 genuinely never syncs, `ghstats-inactive` exits 2 and names it; record it there with a
 reason so the error does not fire nightly and stop being read.
+
+**5. SonarCloud projects whose name does not follow from the repository's.** Only if you
+use `ghstats-sonar`. Unlike the four above this is **not** a constant in the source: it is
+`sonar-projects.txt`, gitignored and read at runtime, so a correction never shows up as a
+diff. Most pairs need no entry at all, because the sync resolves `<sonar org>_<repo>`, a
+bare `<repo>` and any other prefix by itself. `ghstats-sonar --dry-run` lists what it
+could not match, with the key it looked for.
 
 Adding an **AI assistant** needs nothing org-specific: `AI_TOOL_SEED` already covers Claude,
 Cursor and Copilot, matched on trailer email rather than display name.
@@ -332,6 +362,89 @@ Details and the queries for extending both are in [docs/explorer.md](docs/explor
 `report.sh` runs it after every sync. Skipping it would leave the newest commits
 unclassified while every other number moved.
 
+## ghstats-sonar
+
+Optional. Reads your SonarCloud organization and puts two columns on the explorer's
+Repositories page: the quality gate as it stands, and when the project was last analysed.
+Both link to the project in SonarCloud. A team's "Repositories worked in" carries the same
+two columns.
+
+```bash
+export SONAR_ORG=my-sonar-org        # the key in the URL, not the display name
+export SONAR_TOKEN=...               # a SonarCloud user token
+
+ghstats-sonar --dry-run              # what would match, written nowhere
+ghstats-sonar                        # fetch and store
+```
+
+| Flag | Meaning |
+|---|---|
+| `--sonar-org` | **Required.** SonarCloud organization key (else `SONAR_ORG`) |
+| `--sonar-token` | Token override (else `SONAR_TOKEN`) |
+| `--org` | GitHub org to match against; detected from the store when it holds one |
+| `--db` | Store path (default `.cache/ghstats.db`) |
+| `--base-url` | Sonar server root (default `https://sonarcloud.io`) |
+| `--map-file` | Hand-written overrides (default `sonar-projects.txt`; absent is fine) |
+| `--dry-run` | Fetch and report the matching, write nothing |
+
+It costs one paginated project list plus one batched measures call per hundred projects —
+under ten requests for most organizations, which is why it is a separate command you can
+re-run whenever you want a fresh gate without touching GitHub.
+
+**It matches against your real project list rather than guessing a key.** SonarCloud's
+GitHub provisioning names projects `<sonar-org>_<repo>`, but hand-made projects are often
+just `<repo>`, and a few follow neither. Deriving a key and querying it one repository at a
+time turns every deviation into a silent "no Sonar project". Listing the organization is
+one call and returns the authoritative key for everything it holds, so the run can tell you
+which repositories have no project *and* print the key a convention would have looked for:
+
+```
+Repositories:   214 in the store, 168 matched, 46 without a Sonar project
+Matched by:     prefixed 151, bare 12, suffix 5
+
+No Sonar project (46), with the key a convention-based lookup would have used:
+  legacy-importer: looked for my-sonar-org_legacy-importer
+```
+
+That last line is the thing you would otherwise never see.
+
+**When a name follows no convention at all, map it by hand.** Create
+`sonar-projects.txt` next to `members.txt` — one pair per line, `#` starts a comment:
+
+```
+# confirmed in SonarCloud, 2026-09-21
+legal-trustedshopscore   = legal-trusted-shops-core    # hyphenation
+ca-push-notification-api = ca-push-notifications-api   # plural
+review-service           = review-service:main         # legacy branch project
+```
+
+The file is **gitignored and read at runtime**, so a correction is never a source change
+and never a merge conflict with somebody else's mapping. It is organization data, the same
+as `members.txt`. Point `--map-file` elsewhere if you keep yours somewhere else; an absent
+file simply means no overrides.
+
+Entries take precedence over every rule. Re-run `ghstats-sonar` — it takes a second, so
+there is no batching to think about. An entry naming a project the organization no longer
+holds is reported and then ignored, so a stale line costs the repository nothing; two
+entries pointing at one project are reported too, because one project describes one
+codebase. A line that is not a pair stops the run before it touches the network, with the
+line number — a mapping you wrote and believe is in effect should never be skipped in
+silence.
+
+There is no fuzzy matching here on purpose. Two names reading alike is not evidence they
+are the same codebase — on the organization this was built against, `master-data-service`
+and `customer-data-service` are different things — and a wrong pairing reports another
+project's quality gate beside your repository with nothing downstream able to tell.
+Confirm each pair in SonarCloud before adding it.
+
+Two details worth knowing. The two columns are **not filtered by the page's date range** —
+a quality gate is current state, not something that happened inside a window — which the
+column tooltips say outright. And a store where `ghstats-sonar` has never run renders
+differently from one where it ran and matched nothing: the first says so, rather than
+drawing a dash on every row and implying no repository has any coverage.
+
+[docs/sonar.md](docs/sonar.md) has the reasoning.
+
 ## Other tools
 
 ```bash
@@ -479,7 +592,7 @@ network.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests    # 317 tests, no network
+python -m unittest discover -s tests    # 398 tests, no network
 pytest                                  # the same suite, if you installed [dev]
 PYTHONPATH=src python -m unittest discover -s tests   # from a checkout, not installed
 ```

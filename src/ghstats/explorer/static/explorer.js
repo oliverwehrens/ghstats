@@ -322,6 +322,10 @@ function sqlLink(recipe, entity, label) {
  * `omit` drops a tile that cannot say anything in this view: "people: 1" on a
  * person's page is noise where a number should be, and so is the repository
  * count on a repository's.
+ *
+ * Lines are one tile, not two. Added and removed given equal billing invited
+ * reading them as opposing scores; the number that answers "how much moved" is
+ * the two together, and the split belongs under it as detail.
  */
 function tiles(totals, omit, link) {
   const skip = omit || [];
@@ -338,13 +342,15 @@ function tiles(totals, omit, link) {
       el('div', { class: 'l', text: label }),
     ]));
   });
-  box.appendChild(el('div', { class: 'tile pos' }, [
-    el('div', { class: 'n', text: '+' + num(totals.lines_added) }),
-    el('div', { class: 'l', text: 'lines added' }),
-  ]));
-  box.appendChild(el('div', { class: 'tile neg' }, [
-    el('div', { class: 'n', text: '−' + num(totals.lines_removed) }),
-    el('div', { class: 'l', text: 'lines removed' }),
+  const added = totals.lines_added || 0;
+  const removed = totals.lines_removed || 0;
+  box.appendChild(el('div', { class: 'tile' }, [
+    el('div', { class: 'n', text: num(added + removed) }),
+    el('div', { class: 'l', text: 'lines changed' }),
+    el('div', { class: 's' }, [
+      el('span', { class: 'add', text: '+' + num(added) }), ' ',
+      el('span', { class: 'del', text: '\u2212' + num(removed) }),
+    ]),
   ]));
   if (!link) return box;
   return el('div', { class: 'tiles-wrap' }, [box, el('div', { class: 'sql-note' }, [link])]);
@@ -442,7 +448,8 @@ function headCell(label, help, numeric) {
  * percent sign, a minus that is U+2212, and an en dash where a measurement is
  * missing. Anything that survives stripping those is a number; anything else
  * sorts as text. A cell that carries `data-sort` overrides the rendering
- * entirely, which is how a two-part cell like "+120 −34" gets one key.
+ * entirely, which is how the lines cell sorts on a total it draws as a number
+ * and a bar.
  *
  * Missing values return null and are pinned to the bottom in both directions —
  * an un-backfilled repository is unknown, not the smallest.
@@ -574,13 +581,51 @@ const RANK_COLUMNS = [
     + 'merge.'],
   ['reviews', 'Reviews submitted inside the window: approvals, change '
     + 'requests and comment-only reviews alike.'],
-  ['+/\u2212', 'Lines added and removed by the commits counted here. Pull '
-    + 'requests and reviews add nothing to it. Sorts on the two added '
-    + 'together, the total churn.'],
+  ['lines', 'Lines added and removed by the commits counted here, added '
+    + 'together \u2014 the churn this row is also sorted on. The bar under '
+    + 'the number is the split between the two, and the cell\u2019s tooltip '
+    + 'has the exact pair. Pull requests and reviews add nothing to it.'],
 ];
 
+/**
+ * The lines cell: one number to compare on, one bar to read the split from.
+ *
+ * The column has always sorted on added + removed, and used to print the pair
+ * instead — ranking rows by a sum the reader could not see, and asking the
+ * eye to add two four-digit numbers to compare any two rows.
+ *
+ * The bar keeps what the pair carried. A week of cleanup and a week of growth
+ * can reach the same total by opposite routes, and a bare number would make
+ * them identical. It is deliberately not a second number: the ratio is worth a
+ * glance, rarely worth arithmetic. The tooltip has the counts for when it is.
+ */
+function linesCell(added, removed) {
+  const total = added + removed;
+  const cell = el('td', {
+    class: 'num lines', 'data-sort': total,
+    title: '+' + num(added) + ' \u2212' + num(removed),
+  }, [el('div', { class: 'n', text: num(total) })]);
+  if (total) {
+    cell.appendChild(el('div', { class: 'ratio' }, [
+      el('span', { class: 'add', style: 'flex:' + added }),
+      el('span', { class: 'del', style: 'flex:' + removed }),
+    ]));
+  }
+  return cell;
+}
+
+/**
+ * A ranking table, optionally with columns of its own on the end.
+ *
+ * `opts.extra` is how the Repositories page gets its Sonar columns without
+ * People, Teams and Day getting them too: all four call this function, and
+ * only one of them has anything to say about quality gates. It is
+ * `{ columns: [[label, help, numeric], ...], cells: (row) => [td, ...] }`,
+ * and the cells it returns are appended in the same order as the headers.
+ */
 function rankTable(title, rows, opts) {
   const options = opts || {};
+  const extra = options.extra || null;
   const card = el('div', { class: 'card' });
   card.appendChild(el('h2', { text: title }));
   if (!rows.length) {
@@ -592,6 +637,10 @@ function rankTable(title, rows, opts) {
   const head = el('tr', null, [headCell(what, options.help
     || (options.link ? `Click through for this ${what}'s own page.` : null))]);
   RANK_COLUMNS.forEach(([label, help]) => head.appendChild(headCell(label, help, true)));
+  if (extra) {
+    extra.columns.forEach(([label, help, numeric]) =>
+      head.appendChild(headCell(label, help, numeric)));
+  }
   table.appendChild(el('thead', null, [head]));
 
   const body = el('tbody');
@@ -609,14 +658,8 @@ function rankTable(title, rows, opts) {
     const tr = el('tr', null, [cell]);
     [row.commits, row.pulls, row.merges, row.reviews].forEach((v) =>
       tr.appendChild(el('td', { class: 'num', text: num(v || 0) })));
-    tr.appendChild(el('td', {
-      class: 'num', 'data-sort': (row.added || 0) + (row.removed || 0),
-    }, [
-      el('span', { class: 'diff' }, [
-        el('span', { class: 'add', text: '+' + num(row.added || 0) }), ' ',
-        el('span', { class: 'del', text: '−' + num(row.removed || 0) }),
-      ]),
-    ]));
+    tr.appendChild(linesCell(row.added || 0, row.removed || 0));
+    if (extra) extra.cells(row).forEach((td) => tr.appendChild(td));
     body.appendChild(tr);
   });
   table.appendChild(body);
@@ -1180,22 +1223,253 @@ function reviewCard(data) {
  * repository's comments per hundred lines only means something against the
  * ones next to it.
  */
+/**
+ * Gate status as a sort key, worst first.
+ *
+ * The question a gate column exists to answer is "which repositories are
+ * failing", so the severity order is the useful one and the header is marked
+ * numeric to make the first click descending. `NONE` is a project that exists
+ * but has never produced a gate result; it sorts below a passing gate and
+ * well below a failing one, because it is an absence rather than a verdict.
+ */
+const SONAR_RANK = { ERROR: 3, WARN: 2, OK: 1, NONE: 0 };
+
+/* The word carries the meaning; the colour only reinforces it. A cell that
+ * said nothing but red or green would be unreadable to anyone who cannot tell
+ * the two apart. */
+const SONAR_LABEL = {
+  OK: 'Passed', ERROR: 'Failed', WARN: 'Warning', NONE: 'No result',
+};
+
+const SONAR_CLASS = { OK: 'ok', ERROR: 'bad', WARN: 'warn', NONE: 'none' };
+
+/** How long ago, in words. Falls back to the date where Intl cannot help. */
+function sinceText(at) {
+  const then = new Date(at).getTime();
+  if (!Number.isFinite(then)) return '–';
+  const days = Math.round((then - Date.now()) / 86400000);
+  try {
+    const rel = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+    if (Math.abs(days) < 1) return rel.format(0, 'day');
+    if (Math.abs(days) < 30) return rel.format(days, 'day');
+    if (Math.abs(days) < 365) return rel.format(Math.round(days / 30), 'month');
+    return rel.format(Math.round(days / 365), 'year');
+  } catch (err) {
+    return localDay(at);
+  }
+}
+
+/**
+ * The two Sonar cells for one repository row.
+ *
+ * A repository with no Sonar project gets an en dash in both, which
+ * `cellValue` reads as null and `sortBy` pins to the bottom either way -- an
+ * unanalysed repository is unknown, not the best and not the worst.
+ */
+function sonarGateCell(entry) {
+  const gate = el('td', { class: 'num' });
+  if (!entry) {
+    gate.textContent = '–';
+    return gate;
+  }
+  const status = entry.gate || 'NONE';
+  gate.dataset.sort = SONAR_RANK[status] === undefined ? 0 : SONAR_RANK[status];
+  gate.appendChild(el('a', {
+    class: 'sonar ' + (SONAR_CLASS[status] || 'none'),
+    href: entry.url,
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    text: SONAR_LABEL[status] || status,
+    title: `SonarCloud project ${entry.key}`,
+  }));
+  return gate;
+}
+
+function sonarRunCell(entry) {
+  const run = el('td', { class: 'num' });
+  if (!entry || !entry.last_analysis) {
+    run.textContent = '–';
+    return run;
+  }
+  run.dataset.sort = entry.last_analysis;
+  run.appendChild(el('a', {
+    class: 'sonar-when',
+    href: entry.url,
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    text: sinceText(entry.last_analysis),
+    title: `${localDay(entry.last_analysis)} ${localTime(entry.last_analysis)}`,
+  }));
+  return run;
+}
+
+function sonarCells(entry) {
+  return [sonarGateCell(entry), sonarRunCell(entry)];
+}
+
+const SONAR_GATE_COLUMN = ['gate',
+  'The SonarCloud quality gate as it stands right now. Not affected by the '
+  + 'date filter — a gate is current state, not something that happened '
+  + 'inside a window. Sorts worst first; a repository with no Sonar project '
+  + 'sorts to the bottom either way. Links to the project.'];
+
+const SONAR_RUN_COLUMN = ['last analysis',
+  'When SonarCloud last analysed this repository, in your zone. Also current '
+  + 'state rather than windowed. Hover for the exact time.'];
+
+const SONAR_COLUMNS = [SONAR_GATE_COLUMN, SONAR_RUN_COLUMN];
+
+/**
+ * The `extra` option for a rank table whose rows are repositories.
+ *
+ * Both the Repositories page and a team's "Repositories worked in" use it, so
+ * the cell rendering and the sort keys have one implementation. `key` is which
+ * field on a row carries the repository name: `repo` from `repo_list`, `name`
+ * from `_grouped`. Getting it wrong dashes every row rather than failing, so
+ * it is stated at each call site rather than guessed at.
+ *
+ * Returns null when Sonar has never been synced, which is what keeps the
+ * columns off the page entirely rather than showing a dash on every row.
+ */
+function sonarExtra(sonar, opts) {
+  if (!sonar || !sonar.synced) return null;
+  const key = (opts || {}).key || 'name';
+  return {
+    columns: SONAR_COLUMNS.map(([label, help]) => [label, help, true]),
+    cells: (row) => sonarCells(sonar.repos[row[key]]),
+  };
+}
+
+/** Several `extra` blocks as one, left to right. Nulls drop out. */
+function mergeExtras() {
+  const parts = [].slice.call(arguments).filter(Boolean);
+  if (!parts.length) return null;
+  return {
+    columns: parts.reduce((all, p) => all.concat(p.columns), []),
+    cells: (row) => parts.reduce((all, p) => all.concat(p.cells(row)), []),
+  };
+}
+
+/* Most-privileged first, so one click on the "team" header lists the
+ * repositories this team controls before the ones it merely reads. */
+const PERMISSION_RANK = {
+  ADMIN: 5, MAINTAIN: 4, WRITE: 3, TRIAGE: 2, READ: 1,
+};
+
+/**
+ * Does this team have the repository, and if not, who does.
+ *
+ * **A grant is access, not ownership.** GitHub records nothing stronger, and
+ * in a real organization most grants are ADMIN and half the repositories are
+ * granted to several teams at once -- so the column says "granted to" and
+ * lists them, rather than naming an owner the data cannot support.
+ *
+ * The question this answers is the one you arrive with: these are the
+ * repositories the team's members worked in, and some of them belong to
+ * somebody else. The `team` column is blank-with-a-marker exactly for those.
+ */
+function teamAccessExtra(slug, grants) {
+  const byRepo = grants || {};
+  return {
+    columns: [
+      ['team', 'Whether this team holds a GitHub grant on the repository, and '
+        + 'at what permission. "not this team’s" means the members worked '
+        + 'here but the team has no grant — the next column says who does. '
+        + 'One click sorts those to the top, since they are the ones worth '
+        + 'looking at. Current access, not affected by the date filter.'],
+      ['granted to', 'Every team with a grant on this repository, this one '
+        + 'included. GitHub grants are access, not ownership, and a repository '
+        + 'commonly has several — so this lists them rather than naming an '
+        + 'owner. Sorts on how many teams hold it. Click a team to open it; '
+        + 'hover the +N for the rest.'],
+    ],
+    cells: (row) => {
+      const all = byRepo[row.name] || [];
+      const mine = all.find((t) => t.slug === slug);
+
+      const own = el('td');
+      if (mine) {
+        own.dataset.sort = PERMISSION_RANK[mine.permission] || 0;
+        own.appendChild(el('span', {
+          class: 'grant', text: (mine.permission || 'granted').toLowerCase(),
+        }));
+      } else {
+        // Zero, not absent: a missing key would read as null and pin these to
+        // the bottom in *both* directions, which is the one place they must
+        // not be. Below every real permission, and first on one click --
+        // "which of these are not ours" is the question the column exists for.
+        own.dataset.sort = 0;
+        own.appendChild(el('span', {
+          class: 'grant none', text: 'not this team’s',
+        }));
+      }
+
+      const others = all.filter((t) => t.slug !== slug);
+      const cell = el('td');
+      cell.dataset.sort = all.length;
+      if (!all.length) {
+        cell.textContent = '–';
+      } else {
+        const shown = others.slice(0, 2);
+        shown.forEach((team, i) => {
+          if (i) cell.appendChild(document.createTextNode(' '));
+          cell.appendChild(el('a', {
+            href: '#', class: 'chip', text: team.name || team.slug,
+            title: `${team.name || team.slug} · `
+                 + `${(team.permission || '').toLowerCase()}`,
+            onclick: (e) => { e.preventDefault(); navigate(['teams', team.slug]); },
+          }));
+        });
+        if (others.length > shown.length) {
+          cell.appendChild(document.createTextNode(' '));
+          cell.appendChild(el('span', {
+            class: 'chip', text: `+${others.length - shown.length}`,
+            title: others.slice(shown.length)
+              .map((t) => `${t.name || t.slug} · `
+                        + `${(t.permission || '').toLowerCase()}`).join('\n'),
+          }));
+        }
+        if (!others.length) cell.appendChild(el('span', {
+          class: 'grant none', text: 'this team only',
+        }));
+      }
+      return [own, cell];
+    },
+  };
+}
+
 async function viewRepos() {
   const data = await api('repos');
+  const sonar = data.sonar || { synced: false, repos: {} };
   const cards = [
     rankTable('Repositories', data.repos, {
       label: 'repository', key: 'repo', link: (name) => ['repos', name],
       help: 'The repository, as GitHub names it. Only repositories with '
           + 'activity in the window are listed. Click through for its own page.',
+      extra: sonarExtra(sonar, { key: 'repo' }),
     }),
     pullSizeCard(data),
     pullRepoTable(data.pulls),
   ].filter(Boolean).map(sortableTables);
-  show([
-    crumb('Repositories', 'entry point'),
-    sectionNav(cards),
-    el('div', { class: 'count-note', text: `${data.repos.length} with activity in this window` }),
-  ].concat(cards));
+
+  // Never synced is not the same as synced-and-matched-nothing. Drawing a
+  // dash on every row for the first would tell the reader that no repository
+  // here has code quality coverage, on the strength of a question nobody has
+  // asked yet.
+  const notes = [el('div', {
+    class: 'count-note',
+    text: `${data.repos.length} with activity in this window`,
+  })];
+  if (!sonar.synced) {
+    notes.push(el('div', {
+      class: 'count-note',
+      text: 'No SonarCloud data in the store yet — run ghstats-sonar '
+          + '--sonar-org <org> to add quality gate columns.',
+    }));
+  }
+
+  show([crumb('Repositories', 'entry point'), sectionNav(cards)]
+    .concat(notes).concat(cards));
 }
 
 /**
@@ -1262,6 +1536,44 @@ function pullRepoTable(data) {
   return card;
 }
 
+/**
+ * One line of SonarCloud state for a repository's own page.
+ *
+ * When nothing matched, the line names the key that was looked for. "No Sonar
+ * project" and "the project here is not named the way this tool guessed" look
+ * identical from the outside, and the assumed key is the only thing that tells
+ * them apart without re-running the sync.
+ */
+function repoSonarNote(sonar) {
+  if (!sonar || !sonar.synced) return null;
+  const note = el('div', { class: 'count-note' });
+  if (!sonar.key) {
+    note.textContent = sonar.assumed
+      ? `No SonarCloud project (looked for ${sonar.assumed})`
+      : 'No SonarCloud project';
+    return note;
+  }
+  const status = sonar.gate || 'NONE';
+  note.appendChild(document.createTextNode('SonarCloud '));
+  note.appendChild(el('a', {
+    class: 'sonar ' + (SONAR_CLASS[status] || 'none'),
+    href: sonar.url,
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    text: SONAR_LABEL[status] || status,
+  }));
+  note.appendChild(document.createTextNode(
+    sonar.last_analysis
+      ? `  analysed ${sinceText(sonar.last_analysis)} `
+        + `(${localDay(sonar.last_analysis)})  `
+      : '  never analysed  '));
+  note.appendChild(el('a', {
+    class: 'sonar-key', href: sonar.url,
+    target: '_blank', rel: 'noopener noreferrer', text: sonar.key,
+  }));
+  return note;
+}
+
 async function viewRepo(name) {
   const data = await api('repos/' + encodeURIComponent(name));
   const extras = data.repo.teams.slice(0, 6).map((team) => el('a', {
@@ -1281,6 +1593,8 @@ async function viewRepo(name) {
         `${c.kind} ${localDay(c.covered_from)}→${localDay(c.covered_to)}`).join('   '),
     }));
   }
+  const sonarNote = repoSonarNote(data.repo.sonar);
+  if (sonarNote) blocks.push(sonarNote);
 
   blocks.push(
     tiles(data.totals, ['repos'], sqlLink('activity-totals', { repo: name }, 'SQL behind these counts')),
@@ -1382,12 +1696,21 @@ async function viewTeam(slug) {
     rhythmCard(data),
     roster,
     aiCard(data),
-    el('div', { class: 'grid2' }, [
-      rankTable('Repositories worked in', data.by_repo, {
-        label: 'repository', link: (n) => ['repos', n],
-      }),
-      issueCard(data),
-    ]),
+    // Full width, and the issue card below rather than beside it. Nine
+    // columns do not fit in half a page, and this table is the one people
+    // come to a team's page to read.
+    //
+    // Sortable, unlike the other cards here: a gate column you cannot click
+    // to float the failures to the top is most of the point thrown away.
+    sortableTables(rankTable('Repositories worked in', data.by_repo, {
+      label: 'repository', link: (n) => ['repos', n],
+      help: 'Repositories this team’s members were active in during the '
+          + 'window — which is not the same as the repositories the team '
+          + 'has. The next two columns say which is which.',
+      extra: mergeExtras(teamAccessExtra(slug, data.repo_teams),
+                         sonarExtra(data.sonar)),
+    })),
+    issueCard(data),
     el('div', {
       class: 'count-note',
       text: `${team.repos.length} repositories granted to this team` +

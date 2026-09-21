@@ -239,6 +239,46 @@ TABLES: Dict[str, Any] = {
                         '--limit, --skip-*).',
         },
     ),
+    'sonar_projects': (
+        "SonarCloud's current view, one row per Sonar project. Not windowed: "
+        'a quality gate is state now, not something that happened inside a '
+        'date range. `repo_name` NULL means the project matched no repository '
+        'in the store, which is kept as evidence of a naming mismatch.',
+        {
+            'project_key': 'Sonar project key, as SonarCloud spells it.',
+            'name': 'Project display name in SonarCloud.',
+            'repo_name': '`repos.name` this project matched, NULL if none. '
+                         'Deliberately a name and not a foreign key: Sonar '
+                         'holds projects for repositories the sweep does not '
+                         'track.',
+            'match_rule': "How it matched: 'prefixed' (<sonar org>_<repo>), "
+                          "'bare' (<repo>) or 'suffix' (any other prefix). "
+                          'NULL when unmatched.',
+            'last_analysis': 'When SonarCloud last analysed the project, UTC; '
+                             'NULL if it never has.',
+            'gate_status': "Quality gate: 'OK', 'ERROR', 'WARN', or 'NONE' "
+                           'for a project with no gate result yet. NULL means '
+                           'Sonar returned no measure at all. `NONE` is not a '
+                           'failure.',
+            'fetched_at': 'When this snapshot was read from Sonar, UTC.',
+        },
+    ),
+    'sonar_runs': (
+        'One row per `ghstats-sonar` run. Separate from `sync_runs` because '
+        'a Sonar run that matches nothing leaves `sonar_projects` empty, and '
+        'the explorer must tell that apart from never having run at all.',
+        {
+            'id': 'Run id.',
+            'started_at': 'When the run started, UTC.',
+            'finished_at': 'When it finished, UTC; NULL if it did not.',
+            'sonar_org': 'SonarCloud organization key that was read.',
+            'base_url': 'Sonar server the data came from. What the explorer '
+                        'builds its project links against.',
+            'projects_found': 'Projects the organization held.',
+            'repos_matched': 'Repositories resolved to one of them.',
+            'seconds': 'Wall-clock duration.',
+        },
+    ),
 }
 
 FUNCTIONS: List[Dict[str, str]] = [
